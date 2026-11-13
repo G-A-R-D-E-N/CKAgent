@@ -1,12 +1,13 @@
-// CKAgent UI: diagnostics must land in the CK log, and the button must live in the CK frame itself.
+// CKAgent UI: diagnostics must land in the CK log, and the window must match the editor's theme.
 
 #include <windows.h>
-#include <commctrl.h>
 
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <string>
 
@@ -19,7 +20,7 @@ namespace ckagent
 {
 	namespace
 	{
-		constexpr UINT kMcpCommand = 0x4D01;      // idCommand of the toolbar button, so the frame can route it
+		constexpr UINT kMcpCommand = 0x4D01;      // menu id, so the frame can route it to the window
 		constexpr UINT_PTR kRefreshTimer = 3;     // timer that repaints the transcript while the window is open
 		constexpr UINT kRefreshInterval = 600;
 		constexpr std::size_t kKeepLines = 400;   // the transcript must stay bounded or the window grows forever
@@ -33,10 +34,22 @@ namespace ckagent
 		WNDPROC g_frameProc = nullptr;
 		HWND g_activity = nullptr;
 		HWND g_edit = nullptr;
+		HFONT g_font = nullptr;
+		HBRUSH g_background = nullptr;
 		bool g_classReady = false;
-		bool g_buttonAdded = false;
+		bool g_menuAdded = false;
 		bool g_frameMissingLogged = false;
-		unsigned g_buttonAttempts = 0;
+
+		// The window must look like the editor's own panes, so the theme comes from CKPE's config.
+		struct Theme
+		{
+			COLORREF background{ RGB(30, 30, 30) };
+			COLORREF text{ RGB(220, 220, 220) };
+			std::wstring font{ L"Consolas" };
+			int size{ 10 };
+		};
+
+		Theme g_theme;
 
 		// A UI message must be formatted in one place, so the log and the window agree.
 		std::string FormatFrom(const char* fmt, ...)
@@ -49,6 +62,14 @@ namespace ckagent
 			return buf;
 		}
 
+		std::string Narrow(const std::wstring& text)
+		{
+			std::string out;
+			for (wchar_t c : text)
+				out.push_back(c < 128 ? static_cast<char>(c) : '?');
+			return out;
+		}
+
 		std::wstring Widen(const std::string& text)
 		{
 			if (text.empty())
@@ -58,6 +79,114 @@ namespace ckagent
 			std::wstring wide(static_cast<std::size_t>(size), L'\0');
 			MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), size);
 			return wide;
+		}
+
+		std::wstring ConfigPath(const wchar_t* name)
+		{
+			wchar_t path[MAX_PATH]{};
+			GetModuleFileNameW(nullptr, path, MAX_PATH);
+			std::wstring full(path);
+			const std::size_t slash = full.find_last_of(L"\\/");
+			if (slash != std::wstring::npos)
+				full.erase(slash + 1);
+			return full + name;
+		}
+
+		// A value must be read from a "key = value" line, so both toml files parse the same way.
+		bool ReadValue(const std::wstring& path, const std::string& key, std::string& value)
+		{
+			std::ifstream file(Narrow(path));
+			if (!file)
+				return false;
+
+			std::string line;
+			while (std::getline(file, line))
+			{
+				const std::size_t eq = line.find('=');
+				if (eq == std::string::npos)
+					continue;
+
+				std::string name = line.substr(0, eq);
+				name.erase(0, name.find_first_not_of(" \t"));
+				name.erase(name.find_last_not_of(" \t") + 1);
+				if (name != key)
+					continue;
+
+				value = line.substr(eq + 1);
+				value.erase(0, value.find_first_not_of(" \t"));
+				value.erase(value.find_last_not_of(" \t\r") + 1);
+				return true;
+			}
+			return false;
+		}
+
+		// A custom theme stores colors as [r,g,b], so the order must not be confused with COLORREF.
+		bool ReadColor(const std::wstring& path, const std::string& key, COLORREF& color)
+		{
+			std::string value;
+			if (!ReadValue(path, key, value))
+				return false;
+
+			int r = 0, g = 0, b = 0;
+			if (std::sscanf(value.c_str(), "[%d,%d,%d]", &r, &g, &b) != 3)
+				return false;
+
+			color = RGB(r, g, b);
+			return true;
+		}
+
+		Theme LoadTheme()
+		{
+			Theme theme;
+			const std::wstring base = ConfigPath(L"CreationKitPlatformExtended.toml");
+
+			std::string value;
+			bool dark = true;
+			int id = 2;
+
+			if (ReadValue(base, "bUIDarkTheme", value))
+				dark = value == "true";
+			if (ReadValue(base, "uUIDarkThemeId", value))
+				id = std::atoi(value.c_str());
+			if (ReadValue(base, "sFont", value) && value.size() > 2)
+			{
+				value.erase(0, value.find_first_not_of("'\""));
+				value.erase(value.find_last_not_of("'\"") + 1);
+				theme.font = Widen(value);
+			}
+			if (ReadValue(base, "nFontSize", value))
+				theme.size = std::atoi(value.c_str());
+
+			if (!dark)
+			{
+				theme.background = RGB(240, 240, 240);
+				theme.text = RGB(32, 32, 32);
+			}
+			else if (id == 1)
+			{
+				theme.background = RGB(30, 30, 30);
+				theme.text = RGB(224, 224, 224);
+			}
+			else if (id == 2)
+			{
+				theme.background = RGB(27, 32, 45);
+				theme.text = RGB(198, 208, 220);
+			}
+
+			// A custom palette must win, because it is what the editor is actually drawing with.
+			if (dark && id == 3)
+			{
+				const std::wstring custom = ConfigPath(L"CreationKitPlatformExtendedCustomTheme.toml");
+				COLORREF color{};
+				if (ReadColor(custom, "rEdit_BkColor", color))
+					theme.background = color;
+				if (ReadColor(custom, "rText_3", color))
+					theme.text = color;
+				else if (ReadColor(custom, "rText_2", color))
+					theme.text = color;
+			}
+
+			return theme;
 		}
 
 		std::string Transcript()
@@ -105,12 +234,28 @@ namespace ckagent
 			switch (msg)
 			{
 			case WM_CREATE:
-				g_edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+				g_theme = LoadTheme();
+				g_background = CreateSolidBrush(g_theme.background);
+
+				// The theme must be visible in the log, so a wrong palette is diagnosable without a screenshot.
+				LogLine(FormatFrom("CKAgent: theme background #%02X%02X%02X text #%02X%02X%02X font %s %d",
+					GetRValue(g_theme.background), GetGValue(g_theme.background), GetBValue(g_theme.background),
+					GetRValue(g_theme.text), GetGValue(g_theme.text), GetBValue(g_theme.text),
+					Narrow(g_theme.font).c_str(), g_theme.size));
+
+				g_edit = CreateWindowExW(0, L"EDIT", L"",
 					WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
 					0, 0, 10, 10, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
 				if (g_edit)
-					SendMessageW(g_edit, WM_SETFONT,
-						reinterpret_cast<WPARAM>(GetStockObject(ANSI_FIXED_FONT)), TRUE);
+				{
+					// The font must be the one the editor uses, or the transcript reads differently.
+					g_font = CreateFontW(-MulDiv(g_theme.size, GetDeviceCaps(GetDC(hwnd), LOGPIXELSY), 72), 0, 0, 0,
+						FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+						CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, g_theme.font.c_str());
+					if (g_font)
+						SendMessageW(g_edit, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+				}
+
 				SetTimer(hwnd, kRefreshTimer, kRefreshInterval, nullptr);
 				Refresh();
 				return 0;
@@ -118,6 +263,24 @@ namespace ckagent
 			case WM_SIZE:
 				LayoutEdit(hwnd);
 				return 0;
+
+			case WM_ERASEBKGND:
+			{
+				RECT client{};
+				GetClientRect(hwnd, &client);
+				FillRect(reinterpret_cast<HDC>(wParam), &client, g_background);
+				return 1;
+			}
+
+			// An edit control must be told both colors, or it keeps the system palette.
+			case WM_CTLCOLOREDIT:
+			case WM_CTLCOLORSTATIC:
+			{
+				HDC dc = reinterpret_cast<HDC>(wParam);
+				SetTextColor(dc, g_theme.text);
+				SetBkColor(dc, g_theme.background);
+				return reinterpret_cast<LRESULT>(g_background);
+			}
 
 			case WM_TIMER:
 				if (wParam == kRefreshTimer)
@@ -127,10 +290,23 @@ namespace ckagent
 				}
 				break;
 
-			// The window must survive its own close button, because the toolbar button reopens it.
+			// The window must survive its own close button, because the menu item reopens it.
 			case WM_CLOSE:
 				KillTimer(hwnd, kRefreshTimer);
 				ShowWindow(hwnd, SW_HIDE);
+				return 0;
+
+			case WM_DESTROY:
+				if (g_font)
+				{
+					DeleteObject(g_font);
+					g_font = nullptr;
+				}
+				if (g_background)
+				{
+					DeleteObject(g_background);
+					g_background = nullptr;
+				}
 				return 0;
 			}
 
@@ -145,7 +321,7 @@ namespace ckagent
 			if (!g_activity)
 			{
 				g_activity = CreateWindowExW(WS_EX_TOOLWINDOW, kActivityClass, kActivityTitle,
-					WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 760, 420,
+					WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 780, 440,
 					nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
 			}
 
@@ -170,9 +346,6 @@ namespace ckagent
 			return CallWindowProcW(g_frameProc, hwnd, msg, wParam, lParam);
 		}
 
-		BOOL CALLBACK FindToolbarProc(HWND child, LPARAM param);
-
-		// The frame must be identified by what it owns: its class name is not stable across editor builds.
 		BOOL CALLBACK FindFrameProc(HWND hwnd, LPARAM param)
 		{
 			DWORD pid = 0;
@@ -180,58 +353,29 @@ namespace ckagent
 			if (pid != GetCurrentProcessId() || !IsWindowVisible(hwnd) || !GetMenu(hwnd))
 				return TRUE;
 
-			// A frame that carries a toolbar must win over any other top-level window with a menu.
-			HWND toolbar = nullptr;
-			EnumChildWindows(hwnd, FindToolbarProc, reinterpret_cast<LPARAM>(&toolbar));
-
-			auto* best = reinterpret_cast<HWND*>(param);
-			if (!*best || toolbar)
-				*best = hwnd;
-
-			return toolbar ? FALSE : TRUE;
+			*reinterpret_cast<HWND*>(param) = hwnd;
+			return FALSE;
 		}
 
-		// The toolbar must be searched for at any depth: CKPE keeps it inside a rebar, not on the frame.
-		BOOL CALLBACK FindToolbarProc(HWND child, LPARAM param)
+		// CKPE draws its toolbar itself, so a real menu entry must be the visible control.
+		bool InstallMenu(HWND frame)
 		{
-			wchar_t cls[64]{};
-			GetClassNameW(child, cls, 64);
-			if (wcscmp(cls, L"ToolbarWindow32") == 0)
+			HMENU bar = GetMenu(frame);
+			if (!bar)
+				return false;
+
+			HMENU popup = CreatePopupMenu();
+			if (!popup)
+				return false;
+
+			AppendMenuW(popup, MF_STRING, kMcpCommand, L"Show activity");
+			if (!AppendMenuW(bar, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(popup), L"MCP"))
 			{
-				*reinterpret_cast<HWND*>(param) = child;
-				return FALSE;
+				DestroyMenu(popup);
+				return false;
 			}
-			return TRUE;
-		}
 
-		bool InstallButton(HWND frame)
-		{
-			HWND toolbar = nullptr;
-			EnumChildWindows(frame, FindToolbarProc, reinterpret_cast<LPARAM>(&toolbar));
-			if (!toolbar)
-				return false;
-
-			const LRESULT index = SendMessageW(toolbar, TB_ADDSTRINGW, 0,
-				reinterpret_cast<LPARAM>(L"MCP\0"));
-			if (index < 0)
-				return false;
-
-			TBBUTTON button{};
-			button.iBitmap = I_IMAGENONE;   // a text button must carry no image index
-			button.idCommand = static_cast<int>(kMcpCommand);
-			button.fsState = TBSTATE_ENABLED;
-			button.fsStyle = BTNS_AUTOSIZE | BTNS_SHOWTEXT;
-			button.iString = index;
-
-			const LRESULT before = SendMessageW(toolbar, TB_BUTTONCOUNT, 0, 0);
-			if (!SendMessageW(toolbar, TB_ADDBUTTONS, 1, reinterpret_cast<LPARAM>(&button)))
-				return false;
-
-			SendMessageW(toolbar, TB_AUTOSIZE, 0, 0);
-			LogLine(FormatFrom("CKAgent: MCP button added to toolbar 0x%llX (%lld -> %lld buttons)",
-				static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(toolbar)),
-				static_cast<long long>(before),
-				static_cast<long long>(SendMessageW(toolbar, TB_BUTTONCOUNT, 0, 0))));
+			DrawMenuBar(frame);
 			return true;
 		}
 	}
@@ -266,7 +410,7 @@ namespace ckagent
 			if (!g_frameMissingLogged)
 			{
 				g_frameMissingLogged = true;
-				LogLine("CKAgent: the CK frame was not found by class name");
+				LogLine("CKAgent: the CK frame was not found yet");
 			}
 			return false;
 		}
@@ -278,7 +422,7 @@ namespace ckagent
 			wc.lpfnWndProc = ActivityProc;
 			wc.hInstance = GetModuleHandleW(nullptr);
 			wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-			wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+			wc.hbrBackground = nullptr;   // the window paints itself so the theme color is exact
 			wc.lpszClassName = kActivityClass;
 			g_classReady = RegisterClassExW(&wc) != 0;
 			if (!g_classReady)
@@ -299,15 +443,16 @@ namespace ckagent
 			}
 		}
 
-		if (!g_buttonAdded)
+		if (!g_menuAdded)
 		{
-			g_buttonAdded = InstallButton(frame);
-
-			// A missing toolbar must be reported once, or the retry loop stays silent about it.
-			if (!g_buttonAdded && ++g_buttonAttempts == 40)
-				LogLine("CKAgent: no toolbar found in the frame; the MCP button cannot be added");
+			g_menuAdded = InstallMenu(frame);
+			if (g_menuAdded)
+				LogLine(FormatFrom("CKAgent: MCP menu added to frame 0x%llX",
+					static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(frame))));
+			else
+				LogLine(FormatFrom("CKAgent: the frame menu could not be extended (%lu)", GetLastError()));
 		}
 
-		return g_buttonAdded;
+		return g_menuAdded;
 	}
 }
