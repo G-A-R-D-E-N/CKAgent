@@ -27,24 +27,30 @@ namespace ckagent
 	{
 		using TES = CKPE::Fallout4::EditorAPI::TES;
 
-		// CKPE fixes the image base; this is the TES_Singleton address CKPE records for 1.11.246.0.
-		constexpr std::uintptr_t kTesSingleton = 0x143D49150;
-
-		// The image base must stay 0x140000000 for these addresses; findings/ckpe-render-control.md holds the walk.
-		constexpr std::uintptr_t kRenderWindowGlobal = 0x143D491E8;  // address of the BGSRenderWindow pointer
-		constexpr std::uintptr_t kRenderWindowTable = 0x142FD40B8;   // BGSRenderWindow class table address
-		constexpr std::uintptr_t kRenderWindowOffset = 0x180;        // BGSRenderWindow size, so a read stays inside it
-		constexpr std::uintptr_t kWindowCameraOffset = 0xC0;         // offset of the BGSRenderWindowCamera pointer
-		constexpr std::uintptr_t kCameraTable = 0x142FD4828;         // BGSRenderWindowCamera class table address
-		constexpr std::size_t kCameraSize = 0x88;                    // BGSRenderWindowCamera size, so a read stays inside it
+		// Every image address must be rebased: the editor is relocated and never loads at 0x140000000.
+		constexpr std::uintptr_t kTesSingletonOffset = 0x3D49150;       // offset of the TES singleton pointer
+		constexpr std::uintptr_t kRenderWindowSlotOffset = 0x3D491E8;   // offset of the BGSRenderWindow pointer (findings/ckpe-render-control.md)
+		constexpr std::uintptr_t kRenderWindowTableOffset = 0x2FD40B8;  // offset of BGSRenderWindow's class table
+		constexpr std::uintptr_t kWindowCameraOffset = 0xC0;            // offset of the BGSRenderWindowCamera pointer
+		constexpr std::uintptr_t kCameraTableOffset = 0x2FD4828;        // offset of BGSRenderWindowCamera's class table
+		constexpr std::size_t kCameraSize = 0x88;                       // BGSRenderWindowCamera size, so a read stays inside it
+		constexpr std::uintptr_t kRenderWindowSize = 0x180;             // BGSRenderWindow size, so a read stays inside it
 
 		// The view must be driven through the scene camera (findings/ckpe-render-control.md holds the chain).
 		constexpr std::uintptr_t kCameraNiCameraOffset = 0x10;  // offset of the NiCamera pointer inside the camera object
-		constexpr std::uintptr_t kNiCameraTable = 0x143430CC0;  // NiCamera class table address
+		constexpr std::uintptr_t kNiCameraTableOffset = 0x3430CC0;  // offset of NiCamera's class table
 		constexpr std::uintptr_t kNiCameraWorld = 0x70;         // offset of NiTransform _World, so rotation lives here
 		constexpr std::uintptr_t kNiCameraTranslate = 0xA0;     // offset of _World m_Translate
 		constexpr std::uintptr_t kNiCameraScale = 0xAC;         // offset of _World m_fScale
 		constexpr std::uintptr_t kNiCameraReadable = 0xB0;      // bytes that must be readable from the scene camera
+
+		std::uintptr_t g_imageBase = 0;  // runtime image base, captured at load so each offset rebases correctly
+
+		// No image offset may be used raw: the editor picks its base at load, so every read rebases first.
+		std::uintptr_t ImageAddress(std::uintptr_t offset)
+		{
+			return g_imageBase ? g_imageBase + offset : 0;
+		}
 
 		struct Call
 		{
@@ -103,7 +109,7 @@ namespace ckagent
 			}
 
 			if (TES::Singleton.Empty())
-				TES::Singleton = kTesSingleton;
+				TES::Singleton = ImageAddress(kTesSingletonOffset);
 
 			TES* tes = TES::Singleton.GetSingleton();
 			if (!tes)
@@ -147,15 +153,16 @@ namespace ckagent
 		// The pointer must come from the image slot, and its class table must match before anything is read.
 		std::uintptr_t AnchoredRenderWindow()
 		{
-			if (!IsReadable(reinterpret_cast<const void*>(kRenderWindowGlobal), sizeof(std::uintptr_t)))
+			const auto slot = ImageAddress(kRenderWindowSlotOffset);
+			if (!IsReadable(reinterpret_cast<const void*>(slot), sizeof(std::uintptr_t)))
 				return 0;
 
-			const auto window = *reinterpret_cast<const std::uintptr_t*>(kRenderWindowGlobal);
+			const auto window = *reinterpret_cast<const std::uintptr_t*>(slot);
 			if (!window || (window & (sizeof(std::uintptr_t) - 1)))
 				return 0;
-			if (!IsReadable(reinterpret_cast<const void*>(window), kRenderWindowOffset))
+			if (!IsReadable(reinterpret_cast<const void*>(window), kRenderWindowSize))
 				return 0;
-			if (*reinterpret_cast<const std::uintptr_t*>(window) != kRenderWindowTable)
+			if (*reinterpret_cast<const std::uintptr_t*>(window) != ImageAddress(kRenderWindowTableOffset))
 				return 0;
 
 			return window;
@@ -184,7 +191,7 @@ namespace ckagent
 			}
 
 			if (!IsReadable(reinterpret_cast<const void*>(camera), kCameraSize) ||
-				*reinterpret_cast<const std::uintptr_t*>(camera) != kCameraTable)
+				*reinterpret_cast<const std::uintptr_t*>(camera) != ImageAddress(kCameraTableOffset))
 			{
 				reason = "the window's camera is not a BGSRenderWindowCamera";
 				return 0;
@@ -211,7 +218,7 @@ namespace ckagent
 			g_renderWindow = AnchoredRenderWindow();
 			if (!g_renderWindow)
 			{
-				g_cameraReason = "the render window pointer at 0x143D491E8 is empty or does not carry its class table"
+				g_cameraReason = "the render window pointer slot is empty or does not carry its class table"
 					" (findings/ckpe-render-control.md)";
 				return false;
 			}
@@ -256,7 +263,7 @@ namespace ckagent
 			}
 
 			if (!IsReadable(reinterpret_cast<const void*>(niCamera), kNiCameraReadable) ||
-				*reinterpret_cast<const std::uintptr_t*>(niCamera) != kNiCameraTable)
+				*reinterpret_cast<const std::uintptr_t*>(niCamera) != ImageAddress(kNiCameraTableOffset))
 			{
 				reason = "the scene camera is not an NiCamera";
 				return 0;
@@ -601,6 +608,9 @@ namespace ckagent
 
 		void WorkerLoop()
 		{
+			// The worker must announce itself: a pipe that never appears has to be distinguishable from one that failed.
+			CKPE::PluginAPI::_MESSAGE("CKAgent: worker started (pid %lu)", GetCurrentProcessId());
+
 			while (g_running.load())
 			{
 				HANDLE pipe = CreateNamedPipeW(kPipeName,
@@ -628,6 +638,9 @@ namespace ckagent
 
 	bool Start(std::uint64_t runtimeVersion) noexcept
 	{
+		// The image base must be read before any offset is used: the editor is relocated by ASLR.
+		g_imageBase = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+
 		g_buildSupported = MatchesSupportedBuild(runtimeVersion);
 		g_editorThread = GetCurrentThreadId();
 		g_threadOk = g_buildSupported && CreateDispatchWindow();
