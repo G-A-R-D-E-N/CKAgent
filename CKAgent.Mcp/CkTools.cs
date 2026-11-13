@@ -322,3 +322,30 @@ public sealed record JobStatusResult(
     string Message,
     JobRecord? Job,
     IReadOnlyList<string>? KnownJobs);
+
+public sealed record ResolveResult(
+    string Status,
+    string Code,
+    string Message,
+    string? Payload);
+
+// Anchors can go stale after a cell load, so the refresh must be askable, not only automatic.
+[McpServerToolType]
+public sealed class ResolveTools
+{
+    private readonly PluginClient _plugin;
+
+    public ResolveTools(PluginClient plugin) => _plugin = plugin;
+
+    [McpServerTool(Name = "ck.resolve"),
+     Description("Ask the in-process plugin to re-read the render window and its camera once, for when " +
+                 "the anchors go stale after a cell load. Returns the window and camera addresses, or the " +
+                 "reason they did not validate. Requires CKPE plus CKAgent.dll in <game>\\CKPEPlugins\\.")]
+    public ResolveResult Resolve()
+    {
+        if (!_plugin.TryCall("resolve", out string payload, out string code, out string message))
+            return new ResolveResult("error", code, message, null);
+
+        return new ResolveResult("ok", "ok", "resolve", payload);
+    }
+}

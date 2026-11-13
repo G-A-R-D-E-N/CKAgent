@@ -262,6 +262,22 @@ namespace ckagent
 			return true;
 		}
 
+		// A cell load can replace the camera object, so one explicit pass must refresh both anchors.
+		std::string ToolResolve()
+		{
+			const bool resolved = ResolveNow("manual");
+
+			char buf[512];
+			std::snprintf(buf, sizeof buf,
+				"{\"resolved\":%s,\"window\":\"0x%llX\",\"camera\":\"0x%llX\",\"reason\":\"%s\"}",
+				resolved ? "true" : "false",
+				static_cast<unsigned long long>(g_renderWindow),
+				static_cast<unsigned long long>(g_camera),
+				resolved ? "" : g_cameraReason.c_str());
+
+			return buf;
+		}
+
 		void Dispatch(Call& call)
 		{
 			// Request must be "<seq> <tool> [args]".
@@ -298,6 +314,10 @@ namespace ckagent
 					call.reply = "RPLY " + seq + " ERR " + errorCode + " " + errorMessage + "\n";
 					return;
 				}
+			}
+			else if (tool == "resolve")
+			{
+				payload = ToolResolve();
 			}
 			else
 			{

@@ -47,7 +47,8 @@ builder.Services.AddSingleton<JobRunner>();
 builder.Services.AddMcpServer()
     .WithStdioServerTransport()
     .WithTools<CkTools>()
-    .WithTools<CameraTools>();
+    .WithTools<CameraTools>()
+    .WithTools<ResolveTools>();
 
 await builder.Build().RunAsync();
 return 0;
