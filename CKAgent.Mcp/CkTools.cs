@@ -271,9 +271,10 @@ public sealed class CameraTools
     public CameraTools(PluginClient plugin) => _plugin = plugin;
 
     [McpServerTool(Name = "ck.camera"),
-     Description("Read the render window and its camera through the CKAgent plugin: mode=Get reports " +
-                 "the window and camera addresses and their class tables. mode=Set is refused with " +
-                 "camera_transform_unmapped until that camera's pose fields are mapped. " +
+     Description("Read or set the render window camera through the CKAgent plugin: mode=Get returns " +
+                 "the scene camera's position, rotation matrix and scale; mode=Set with x/y/z (and " +
+                 "optionally yaw/pitch) moves it. Needs a loaded cell and reports " +
+                 "camera_transform_unverified when the scene camera has no usable transform yet. " +
                  "Requires CKPE plus CKAgent.dll in <game>\\CKPEPlugins\\.")]
     public CameraResult Camera(string mode = "get", double? x = null, double? y = null, double? z = null,
                                double? yaw = null, double? pitch = null)

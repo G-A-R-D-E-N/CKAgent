@@ -38,6 +38,14 @@ namespace ckagent
 		constexpr std::uintptr_t kCameraTable = 0x142FD4828;         // BGSRenderWindowCamera class table address
 		constexpr std::size_t kCameraSize = 0x88;                    // BGSRenderWindowCamera size, so a read stays inside it
 
+		// The view must be driven through the scene camera (findings/ckpe-render-control.md holds the chain).
+		constexpr std::uintptr_t kCameraNiCameraOffset = 0x10;  // offset of the NiCamera pointer inside the camera object
+		constexpr std::uintptr_t kNiCameraTable = 0x143430CC0;  // NiCamera class table address
+		constexpr std::uintptr_t kNiCameraWorld = 0x70;         // offset of NiTransform _World, so rotation lives here
+		constexpr std::uintptr_t kNiCameraTranslate = 0xA0;     // offset of _World m_Translate
+		constexpr std::uintptr_t kNiCameraScale = 0xAC;         // offset of _World m_fScale
+		constexpr std::uintptr_t kNiCameraReadable = 0xB0;      // bytes that must be readable from the scene camera
+
 		struct Call
 		{
 			std::string request;   // after "CALL <seq> "
@@ -231,6 +239,70 @@ namespace ckagent
 				CKPE::PluginAPI::_WARNING("CKAgent: could not arm the camera resolver");
 		}
 
+		// The window's camera must carry the scene's NiCamera; the transform is only read through it.
+		std::uintptr_t AnchoredNiCamera(std::uintptr_t camera, std::string& reason)
+		{
+			if (!IsReadable(reinterpret_cast<const void*>(camera), kCameraSize))
+			{
+				reason = "the camera object cannot be read";
+				return 0;
+			}
+
+			const auto niCamera = *reinterpret_cast<const std::uintptr_t*>(camera + kCameraNiCameraOffset);
+			if (!niCamera || (niCamera & (sizeof(std::uintptr_t) - 1)))
+			{
+				reason = "the camera has no scene camera yet; load a cell first";
+				return 0;
+			}
+
+			if (!IsReadable(reinterpret_cast<const void*>(niCamera), kNiCameraReadable) ||
+				*reinterpret_cast<const std::uintptr_t*>(niCamera) != kNiCameraTable)
+			{
+				reason = "the scene camera is not an NiCamera";
+				return 0;
+			}
+
+			return niCamera;
+		}
+
+		float RowLength(const float* rotate, int row)
+		{
+			const float x = rotate[row * 3 + 0];
+			const float y = rotate[row * 3 + 1];
+			const float z = rotate[row * 3 + 2];
+			return std::sqrt(x * x + y * y + z * z);
+		}
+
+		float RowDot(const float* rotate, int a, int b)
+		{
+			return rotate[a * 3 + 0] * rotate[b * 3 + 0] +
+				rotate[a * 3 + 1] * rotate[b * 3 + 1] +
+				rotate[a * 3 + 2] * rotate[b * 3 + 2];
+		}
+
+		// A rotation must be orthonormal and scaled before one float is trusted; a half-built scene must be refused.
+		bool ReadsAsTransform(std::uintptr_t niCamera, std::string& reason)
+		{
+			const auto* rotate = reinterpret_cast<const float*>(niCamera + kNiCameraWorld);
+			const float scale = *reinterpret_cast<const float*>(niCamera + kNiCameraScale);
+
+			const bool orthogonal =
+				std::fabs(RowLength(rotate, 0) - 1.0f) < 0.01f &&
+				std::fabs(RowLength(rotate, 1) - 1.0f) < 0.01f &&
+				std::fabs(RowLength(rotate, 2) - 1.0f) < 0.01f &&
+				std::fabs(RowDot(rotate, 0, 1)) < 0.01f &&
+				std::fabs(RowDot(rotate, 0, 2)) < 0.01f &&
+				std::fabs(RowDot(rotate, 1, 2)) < 0.01f;
+
+			if (!orthogonal || !(scale > 0.0f && scale < 1000.0f))
+			{
+				reason = "the scene camera has no usable transform yet; load a cell first";
+				return false;
+			}
+
+			return true;
+		}
+
 		bool ToolCamera(const std::string& args, std::string& payload,
 			std::string& errorCode, std::string& errorMessage)
 		{
@@ -241,19 +313,59 @@ namespace ckagent
 				return false;
 			}
 
-			// BGSRenderWindowCamera's pose fields must be mapped before a float is read or written.
-			if (args.rfind("set", 0) == 0)
+			std::string reason;
+			const auto niCamera = AnchoredNiCamera(g_camera, reason);
+			if (!niCamera)
 			{
-				errorCode = "camera_transform_unmapped";
-				errorMessage = "BGSRenderWindowCamera's pose offsets are unmapped (findings/ckpe-render-control.md)";
+				errorCode = "camera_unavailable";
+				errorMessage = reason;
 				return false;
 			}
 
-			char buf[384];
+			if (!ReadsAsTransform(niCamera, reason))
+			{
+				errorCode = "camera_transform_unverified";
+				errorMessage = reason;
+				return false;
+			}
+
+			auto* rotate = reinterpret_cast<float*>(niCamera + kNiCameraWorld);
+			auto* translate = reinterpret_cast<float*>(niCamera + kNiCameraTranslate);
+			const float scale = *reinterpret_cast<const float*>(niCamera + kNiCameraScale);
+
+			float x = 0, y = 0, z = 0, yaw = 0, pitch = 0;
+			const bool oriented = std::sscanf(args.c_str(), "set %f %f %f %f %f", &x, &y, &z, &yaw, &pitch) == 5;
+			const bool moved = oriented || std::sscanf(args.c_str(), "set %f %f %f", &x, &y, &z) == 3;
+
+			if (moved)
+			{
+				translate[0] = x;
+				translate[1] = y;
+				translate[2] = z;
+
+				if (oriented)
+				{
+					// Rotation must stay unverified until Gamebryo's basis is confirmed visually.
+					const float cy = std::cos(yaw), sy = std::sin(yaw);
+					const float cp = std::cos(pitch), sp = std::sin(pitch);
+
+					rotate[0] = cy;          rotate[1] = sy;         rotate[2] = 0;
+					rotate[3] = -sy * cp;    rotate[4] = cy * cp;    rotate[5] = sp;
+					rotate[6] = sy * sp;     rotate[7] = -cy * sp;   rotate[8] = cp;
+				}
+			}
+
+			// The reply must name every object it touched: a resolution and a guess have to look different.
+			char buf[640];
 			std::snprintf(buf, sizeof buf,
-				"{\"window\":\"0x%llX\",\"camera\":\"0x%llX\","
-				"\"cameraClass\":\"BGSRenderWindowCamera\",\"transform\":\"unmapped\","
-				"\"resolvedAt\":\"%s\"}",
+				"{\"camera\":\"0x%llX\",\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"scale\":%.4f,"
+				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],"
+				"\"moved\":%s,\"rotationVerified\":false,"
+				"\"window\":\"0x%llX\",\"cameraObject\":\"0x%llX\",\"resolvedAt\":\"%s\"}",
+				static_cast<unsigned long long>(niCamera),
+				translate[0], translate[1], translate[2], scale,
+				rotate[0], rotate[1], rotate[2], rotate[3], rotate[4], rotate[5], rotate[6], rotate[7], rotate[8],
+				moved ? "true" : "false",
 				static_cast<unsigned long long>(g_renderWindow),
 				static_cast<unsigned long long>(g_camera),
 				g_cameraWhen);
