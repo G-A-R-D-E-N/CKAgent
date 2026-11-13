@@ -1,0 +1,95 @@
+using System.Globalization;
+using System.IO.Pipes;
+using System.Text;
+
+namespace Garden.CkAgent;
+
+/// Only the plugin reaches editor internals, so failures must return a code, not an exception.
+public sealed class PluginClient
+{
+    private const string PipeName = "ckagent";
+    private const string HeloPrefix = "HELO ";
+
+    private readonly object _gate = new();
+    private int _sequence;
+
+    public bool TryCall(string command, out string payload, out string code, out string message)
+    {
+        payload = "";
+        code = "ok";
+        message = "";
+
+        lock (_gate)
+        {
+            try
+            {
+                using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.None);
+                pipe.Connect(1500);
+
+                using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, leaveOpen: true);
+                using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true)
+                {
+                    AutoFlush = true,
+                    NewLine = "\n",
+                };
+
+                string? helo = reader.ReadLine();
+                if (helo == null || !helo.StartsWith(HeloPrefix, StringComparison.Ordinal))
+                {
+                    code = "plugin_not_ready";
+                    message = "the CKAgent plugin did not announce itself on the pipe";
+                    return false;
+                }
+
+                int sequence = ++_sequence;
+                writer.WriteLine($"CALL {sequence} {command}");
+
+                string? reply = reader.ReadLine();
+                if (reply == null)
+                {
+                    code = "plugin_closed";
+                    message = "the plugin closed the pipe before answering";
+                    return false;
+                }
+
+                // Reply must be RPLY <seq> OK <json> or RPLY <seq> ERR <code> <message>.
+                string[] parts = reply.Split(' ', 5, StringSplitOptions.None);
+                if (parts.Length < 4 || parts[0] != "RPLY")
+                {
+                    code = "malformed_reply";
+                    message = $"unexpected reply: {Truncate(reply, 200)}";
+                    return false;
+                }
+
+                if (parts[2] == "ERR")
+                {
+                    code = parts[3];
+                    message = parts.Length > 4 ? parts[4] : code;
+                    return false;
+                }
+
+                payload = parts.Length > 4 ? parts[4] : "";
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                code = "CKPEUnavailable";
+                message = "no CKAgent plugin is listening on \\\\.\\pipe\\ckagent; install and enable CKPE with " +
+                          "CKAgent.dll in <game>\\CKPEPlugins\\";
+                return false;
+            }
+            catch (IOException exception)
+            {
+                code = "plugin_io";
+                message = exception.Message;
+                return false;
+            }
+        }
+    }
+
+    /// <summary>Convenience for the camera tool; formats with invariant culture so decimals are configurable-friendly.</summary>
+    public static string Format(double value) => value.ToString("0.####", CultureInfo.InvariantCulture);
+
+    private static string Truncate(string value, int length) =>
+        value.Length <= length ? value : value[..length] + "…";
+}
