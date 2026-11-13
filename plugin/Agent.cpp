@@ -54,6 +54,8 @@ namespace ckagent
 		std::uintptr_t g_control = 0;
 		std::uintptr_t g_controlSlot = 0;
 		const char* g_controlSource = "none";
+		const char* g_controlWhen = "none";
+		std::string g_controlReason;
 		bool g_controlAnchored = false;
 
 		std::string FormatBuild(std::uint64_t version)
@@ -308,34 +310,38 @@ namespace ckagent
 			return 0;
 		}
 
-		// Ordering: cached instance, the editor's own data, then its heap.
-		std::uintptr_t ResolveRenderControl(HWND& window, std::string& reason)
+		// Resolution must run once, so the camera path never walks memory.
+		constexpr UINT_PTR kResolveTimer = 1;
+		constexpr UINT kResolveInterval = 500;
+		constexpr UINT kResolveWindowTicks = 120;
+		constexpr UINT kResolveWalks = 2;
+
+		UINT g_resolveTicks = 0;
+		UINT g_resolveWalks = 0;
+
+		// One walk over the editor's image data, then its heap; the result must last the session.
+		bool ResolveNow(const char* when)
 		{
-			window = FindRenderWindow();
-			if (!window)
-			{
-				reason = "no MonitorClass render window yet";
-				return 0;
-			}
-
-			if (!RenderControlTable())
-			{
-				reason = "CKPE's ID database has no TESRenderControl class table for this editor build";
-				return 0;
-			}
-
-			bool anchored = false;
-			if (g_control && ReadsAsRenderControl(g_control, window, anchored))
-			{
-				g_controlAnchored = anchored;
-				return g_control;
-			}
-
 			g_control = 0;
 			g_controlSlot = 0;
 			g_controlAnchored = false;
 			g_controlSource = "none";
+			g_controlWhen = when;
 
+			if (!RenderControlTable())
+			{
+				g_controlReason = "CKPE's ID database has no TESRenderControl class table for this editor build";
+				return false;
+			}
+
+			const auto window = FindRenderWindow();
+			if (!window)
+			{
+				g_controlReason = "no MonitorClass render window yet";
+				return false;
+			}
+
+			bool anchored = false;
 			std::uint64_t scanned = 0;
 			const auto matches = [&](std::uintptr_t, std::uintptr_t slot)
 			{
@@ -366,8 +372,8 @@ namespace ckagent
 					"nothing in memory carries CKPE's TESRenderControl class table 0x%llX (scanned %llu MB)",
 					static_cast<unsigned long long>(g_controlTable),
 					static_cast<unsigned long long>(scanned >> 20));
-				reason = buf;
-				return 0;
+				g_controlReason = buf;
+				return false;
 			}
 
 			g_control = slot;
@@ -382,7 +388,46 @@ namespace ckagent
 					return value == object && candidate != object;
 				});
 
+			return true;
+		}
+
+		// The camera path must only read what load time resolved; it never walks.
+		std::uintptr_t CachedRenderControl(HWND& window, std::string& reason)
+		{
+			window = FindRenderWindow();
+			if (!window)
+			{
+				reason = "no MonitorClass render window yet";
+				return 0;
+			}
+
+			if (!g_control)
+			{
+				reason = g_controlReason.empty()
+					? "the render control was not resolved when the plugin loaded"
+					: g_controlReason;
+				return 0;
+			}
+
+			bool anchored = false;
+			if (!ReadsAsRenderControl(g_control, window, anchored))
+			{
+				reason = "the render control resolved at load no longer validates; restart the editor";
+				return 0;
+			}
+
+			g_controlAnchored = anchored;
 			return g_control;
+		}
+
+		// CKPE loads plugins before the editor creates the render window, so it must be waited for on a timer.
+		void ArmResolveTimer()
+		{
+			if (!g_window)
+				return;
+
+			if (!SetTimer(g_window, kResolveTimer, kResolveInterval, nullptr))
+				CKPE::PluginAPI::_WARNING("CKAgent: could not arm the render control resolver");
 		}
 
 		bool ToolCamera(const std::string& args, std::string& payload,
@@ -390,7 +435,7 @@ namespace ckagent
 		{
 			HWND window = nullptr;
 			std::string reason;
-			const auto control = ResolveRenderControl(window, reason);
+			const auto control = CachedRenderControl(window, reason);
 			if (!control)
 			{
 				errorCode = "render_control_unresolved";
@@ -438,13 +483,15 @@ namespace ckagent
 				"{\"camera\":\"0x%llX\",\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"scale\":%.4f,"
 				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],"
 				"\"moved\":%s,\"rotationVerified\":false,"
-				"\"control\":\"0x%llX\",\"controlSource\":\"%s\",\"global\":\"0x%llX\",\"anchored\":%s}",
+				"\"control\":\"0x%llX\",\"controlSource\":\"%s\",\"controlAt\":\"%s\","
+				"\"global\":\"0x%llX\",\"anchored\":%s}",
 				static_cast<unsigned long long>(camera),
 				translate[0], translate[1], translate[2], scale,
 				rotate[0], rotate[1], rotate[2], rotate[4], rotate[5], rotate[6], rotate[8], rotate[9], rotate[10],
 				moved ? "true" : "false",
 				static_cast<unsigned long long>(control),
 				g_controlSource,
+				g_controlWhen,
 				static_cast<unsigned long long>(g_controlSlot),
 				g_controlAnchored ? "true" : "false");
 
@@ -500,6 +547,30 @@ namespace ckagent
 
 		LRESULT CALLBACK DispatchProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		{
+			if (msg == WM_TIMER && wParam == kResolveTimer)
+			{
+				if (!FindRenderWindow())
+				{
+					// Waiting costs nothing; two walks after the window appears must be the whole cost.
+					if (++g_resolveTicks >= kResolveWindowTicks)
+					{
+						KillTimer(hWnd, kResolveTimer);
+						g_controlReason = "the render window never appeared after load";
+					}
+					return 0;
+				}
+
+				KillTimer(hWnd, kResolveTimer);
+
+				if (ResolveNow("deferred"))
+					return 0;
+
+				if (++g_resolveWalks < kResolveWalks)
+					SetTimer(g_window, kResolveTimer, kResolveInterval, nullptr);
+
+				return 0;
+			}
+
 			if (msg == kDispatchDrain)
 			{
 				for (;;)
@@ -679,6 +750,19 @@ namespace ckagent
 		if (!g_threadOk)
 			return false;
 
+		// Load-time resolution: the camera path must never walk memory.
+		if (ResolveNow("load"))
+		{
+			CKPE::PluginAPI::_MESSAGE("CKAgent: render control 0x%llX from %s",
+				static_cast<unsigned long long>(g_control), g_controlSource);
+		}
+		else
+		{
+			CKPE::PluginAPI::_MESSAGE("CKAgent: render control not ready (%s); waiting for the render window",
+				g_controlReason.c_str());
+			ArmResolveTimer();
+		}
+
 		g_running = true;
 		g_worker = std::thread(WorkerLoop);
 
@@ -703,6 +787,7 @@ namespace ckagent
 
 		if (g_window)
 		{
+			KillTimer(g_window, kResolveTimer);
 			DestroyWindow(g_window);
 			g_window = nullptr;
 		}
