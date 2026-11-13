@@ -17,7 +17,6 @@
 #include <CKPE.Common.AddressLibrary.h>
 #include <CKPE.PluginAPI.PluginAPI.h>
 #include <EditorAPI/T/TES.h>
-#include <EditorAPI/T/TESRenderControl.h>
 
 #include "Agent.h"
 #include "Protocol.h"
@@ -27,10 +26,17 @@ namespace ckagent
 	namespace
 	{
 		using TES = CKPE::Fallout4::EditorAPI::TES;
-		using RenderControl = CKPE::Fallout4::EditorAPI::TESRenderControl;
 
 		// CKPE fixes the image base; this is the TES_Singleton address CKPE records for 1.11.246.0.
 		constexpr std::uintptr_t kTesSingleton = 0x143D49150;
+
+		// The image base must stay 0x140000000 for these addresses; findings/ckpe-render-control.md holds the walk.
+		constexpr std::uintptr_t kRenderWindowGlobal = 0x143D491E8;  // address of the BGSRenderWindow pointer
+		constexpr std::uintptr_t kRenderWindowTable = 0x142FD40B8;   // BGSRenderWindow class table address
+		constexpr std::uintptr_t kRenderWindowOffset = 0x180;        // BGSRenderWindow size, so a read stays inside it
+		constexpr std::uintptr_t kWindowCameraOffset = 0xC0;         // offset of the BGSRenderWindowCamera pointer
+		constexpr std::uintptr_t kCameraTable = 0x142FD4828;         // BGSRenderWindowCamera class table address
+		constexpr std::size_t kCameraSize = 0x88;                    // BGSRenderWindowCamera size, so a read stays inside it
 
 		struct Call
 		{
@@ -50,13 +56,11 @@ namespace ckagent
 		bool g_buildSupported = false;
 
 		// Resolution state; only the editor thread must touch it.
-		std::uintptr_t g_controlTable = 0;
-		std::uintptr_t g_control = 0;
-		std::uintptr_t g_controlSlot = 0;
-		const char* g_controlSource = "none";
-		const char* g_controlWhen = "none";
-		std::string g_controlReason;
-		bool g_controlAnchored = false;
+		std::uintptr_t g_renderWindow = 0;
+		std::uintptr_t g_camera = 0;
+		const char* g_cameraSource = "none";
+		const char* g_cameraWhen = "none";
+		std::string g_cameraReason;
 
 		std::string FormatBuild(std::uint64_t version)
 		{
@@ -115,10 +119,8 @@ namespace ckagent
 			return buf;
 		}
 
-		// --- render control (offset table from CKPE's TESRenderControl.h) ---
-		// Each field is read as raw memory at the documented offset.
-		// Offset table: +0x008 DialogWindow, +0x010 DisplayControlID, +0x058 Camera.
-		// Camera position must be read at the camera+0xA0 offset (NiAVObject::_World 0x70 + m_Translate 0x30).
+		// --- render window: one address in image data, plus the camera inside it (findings/ckpe-render-control.md) ---
+		// No walk must happen: the editor stores its window pointer in image data and the camera inside it.
 
 		bool IsReadable(const void* address, std::size_t bytes)
 		{
@@ -134,290 +136,89 @@ namespace ckagent
 			return start + bytes >= start && start + bytes <= end;
 		}
 
-		struct FindWindowContext
+		// The pointer must come from the image slot, and its class table must match before anything is read.
+		std::uintptr_t AnchoredRenderWindow()
 		{
-			DWORD pid;
-			HWND found;
-		};
-
-		BOOL CALLBACK FindRenderWindowProc(HWND hwnd, LPARAM lParam)
-		{
-			auto* context = reinterpret_cast<FindWindowContext*>(lParam);
-
-			DWORD pid = 0;
-			GetWindowThreadProcessId(hwnd, &pid);
-			if (pid != context->pid) return TRUE;
-
-			wchar_t name[64]{};
-			if (GetClassNameW(hwnd, name, 64) == 0) return TRUE;
-			if (wcscmp(name, L"MonitorClass") != 0) return TRUE;
-
-			context->found = hwnd;
-			return FALSE;
-		}
-
-		HWND FindRenderWindow()
-		{
-			FindWindowContext context{ GetCurrentProcessId(), nullptr };
-			EnumWindows(FindRenderWindowProc, reinterpret_cast<LPARAM>(&context));
-			return context.found;
-		}
-
-		// The class table must come from CKPE's ID database: one stable ID for every build.
-		std::uintptr_t RenderControlTable()
-		{
-			static constexpr CKPE::Common::ID kTable = RenderControl::VTABLE // findings/ckpe-render-control.md stands behind this address
-				;
-
-			if (g_controlTable)
-				return g_controlTable;
-
-			const auto iddb = CKPE::Common::AddressLibrary::GetSingleton();
-			if (!iddb || !iddb->IsLoaded())
+			if (!IsReadable(reinterpret_cast<const void*>(kRenderWindowGlobal), sizeof(std::uintptr_t)))
 				return 0;
 
-			// A zero offset means no entry for this build; the module base alone must never be used.
-			if (!kTable.Id() || !kTable.Offset())
+			const auto window = *reinterpret_cast<const std::uintptr_t*>(kRenderWindowGlobal);
+			if (!window || (window & (sizeof(std::uintptr_t) - 1)))
+				return 0;
+			if (!IsReadable(reinterpret_cast<const void*>(window), kRenderWindowOffset))
+				return 0;
+			if (*reinterpret_cast<const std::uintptr_t*>(window) != kRenderWindowTable)
 				return 0;
 
-			g_controlTable = kTable.Address();
-			return g_controlTable;
+			return window;
 		}
 
-		// Exact class table, then the two fields that define the layout: nothing must be dereferenced on a guess.
-		bool ReadsAsRenderControl(std::uintptr_t object, HWND renderWindow, bool& anchored)
+		// The camera must carry BGSRenderWindowCamera's class table; a leftover pointer on the heap must not pass.
+		std::uintptr_t AnchoredCamera(std::uintptr_t window, std::string& reason)
 		{
-			anchored = false;
-
-			if (!object || (object & (sizeof(std::uintptr_t) - 1)))
-				return false;
-			if (!IsReadable(reinterpret_cast<const void*>(object), sizeof(RenderControl)))
-				return false;
-			if (*reinterpret_cast<const std::uintptr_t*>(object) != g_controlTable)
-				return false;
-
-			const auto* control = reinterpret_cast<const RenderControl*>(object);
-			if (!control->DialogWindow || !IsWindow(control->DialogWindow))
-				return false;
-
-			const auto display = static_cast<int>(control->DisplayControlID);
-			if (display <= 0 || display > 0xFFFF)
-				return false;
-
-			const auto child = GetDlgItem(control->DialogWindow, display);
-			if (!child)
-				return false;
-
-			for (auto window = child; window; window = GetParent(window))
+			if (!window)
 			{
-				if (window == renderWindow)
-				{
-					anchored = true;
-					break;
-				}
+				reason = "the render window global is empty";
+				return 0;
 			}
 
-			return true;
-		}
-
-		// Reads must go through ReadProcessMemory: another editor thread can free a page mid-walk.
-		constexpr std::size_t kScanChunk = 32 * 1024;
-		constexpr std::uint64_t kScanBudget = 6ull * 1024 * 1024 * 1024;
-
-		template <class Match>
-		std::uintptr_t ScanMemory(std::uintptr_t begin, std::uintptr_t end, std::uint64_t& scanned, Match&& match)
-		{
-			std::vector<std::uint8_t> buffer(kScanChunk);
-
-			for (auto at = begin; at < end && scanned < kScanBudget; )
+			if (!IsReadable(reinterpret_cast<const void*>(window), kWindowCameraOffset + sizeof(std::uintptr_t)))
 			{
-				const auto want = static_cast<std::size_t>(std::min<std::uintptr_t>(kScanChunk, end - at));
-				SIZE_T got = 0;
-				if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(at),
-						buffer.data(), want, &got) || got < sizeof(std::uintptr_t))
-				{
-					at += want;
-					continue;
-				}
-
-				scanned += got;
-
-				for (std::size_t i = 0; i + sizeof(std::uintptr_t) <= got; i += sizeof(std::uintptr_t))
-				{
-					const auto slot = at + i;
-					if (slot & (sizeof(std::uintptr_t) - 1))
-						continue;
-
-					std::uintptr_t value = 0;
-					std::memcpy(&value, buffer.data() + i, sizeof value);
-					if (value && match(value, slot))
-						return slot;
-				}
-
-				at += got;
+				reason = "the render window cannot be read";
+				return 0;
 			}
 
-			return 0;
-		}
-
-		enum class ScanArea
-		{
-			ImageData,
-			Private
-		};
-
-		// The image must be walked first: it is small, and it is where an owning global lives.
-		template <class Match>
-		std::uintptr_t ScanAreaFor(ScanArea area, std::uint64_t& scanned, Match&& match)
-		{
-			const auto moduleBase = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-
-			SYSTEM_INFO info{};
-			GetSystemInfo(&info);
-
-			const auto limit = reinterpret_cast<std::uintptr_t>(info.lpMaximumApplicationAddress);
-
-			for (auto at = reinterpret_cast<std::uintptr_t>(info.lpMinimumApplicationAddress);
-				at < limit && scanned < kScanBudget; )
+			const auto camera = *reinterpret_cast<const std::uintptr_t*>(window + kWindowCameraOffset);
+			if (!camera || (camera & (sizeof(std::uintptr_t) - 1)))
 			{
-				MEMORY_BASIC_INFORMATION region{};
-				if (!VirtualQuery(reinterpret_cast<const void*>(at), &region, sizeof region) || !region.RegionSize)
-				{
-					at += 0x1000;
-					continue;
-				}
-
-				const auto base = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
-				const auto size = static_cast<std::uintptr_t>(region.RegionSize);
-
-				const bool writable = region.State == MEM_COMMIT &&
-					!(region.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
-					(region.Protect & (PAGE_READWRITE | PAGE_WRITECOPY));
-
-				const bool wanted = writable && (area == ScanArea::ImageData
-					? region.Type == MEM_IMAGE && reinterpret_cast<std::uintptr_t>(region.AllocationBase) == moduleBase
-					: region.Type == MEM_PRIVATE);
-
-				if (wanted)
-				{
-					if (const auto hit = ScanMemory(base, base + size, scanned, match))
-						return hit;
-				}
-
-				at = base + size;
+				reason = "the render window has no camera yet; load a cell first";
+				return 0;
 			}
 
-			return 0;
+			if (!IsReadable(reinterpret_cast<const void*>(camera), kCameraSize) ||
+				*reinterpret_cast<const std::uintptr_t*>(camera) != kCameraTable)
+			{
+				reason = "the window's camera is not a BGSRenderWindowCamera";
+				return 0;
+			}
+
+			return camera;
 		}
 
-		// Resolution must run once, so the camera path never walks memory.
+		// Resolution must be retried on a timer: CKPE loads plugins before the editor builds its window.
 		constexpr UINT_PTR kResolveTimer = 1;
 		constexpr UINT kResolveInterval = 500;
 		constexpr UINT kResolveWindowTicks = 120;
-		constexpr UINT kResolveWalks = 2;
 
 		UINT g_resolveTicks = 0;
-		UINT g_resolveWalks = 0;
 
-		// One walk over the editor's image data, then its heap; the result must last the session.
+		// Both anchors must hold at once: the window pointer and the camera object inside it.
 		bool ResolveNow(const char* when)
 		{
-			g_control = 0;
-			g_controlSlot = 0;
-			g_controlAnchored = false;
-			g_controlSource = "none";
-			g_controlWhen = when;
+			g_renderWindow = 0;
+			g_camera = 0;
+			g_cameraSource = "none";
+			g_cameraWhen = when;
 
-			if (!RenderControlTable())
+			g_renderWindow = AnchoredRenderWindow();
+			if (!g_renderWindow)
 			{
-				g_controlReason = "CKPE's ID database has no TESRenderControl class table for this editor build";
+				g_cameraReason = "the render window pointer at 0x143D491E8 is empty or does not carry its class table"
+					" (findings/ckpe-render-control.md)";
 				return false;
 			}
 
-			const auto window = FindRenderWindow();
-			if (!window)
+			std::string reason;
+			g_camera = AnchoredCamera(g_renderWindow, reason);
+			if (!g_camera)
 			{
-				g_controlReason = "no MonitorClass render window yet";
+				g_cameraReason = reason;
 				return false;
 			}
 
-			bool anchored = false;
-			std::uint64_t scanned = 0;
-			const auto matches = [&](std::uintptr_t, std::uintptr_t slot)
-			{
-				bool hitAnchored = false;
-				if (!ReadsAsRenderControl(slot, window, hitAnchored))
-					return false;
-
-				anchored = hitAnchored;
-				return true;
-			};
-
-			auto slot = ScanAreaFor(ScanArea::ImageData, scanned, matches);
-			if (slot)
-			{
-				g_controlSource = "image data";
-			}
-			else
-			{
-				slot = ScanAreaFor(ScanArea::Private, scanned, matches);
-				if (slot)
-					g_controlSource = "process heap";
-			}
-
-			if (!slot)
-			{
-				char buf[320];
-				std::snprintf(buf, sizeof buf,
-					"nothing in memory carries CKPE's TESRenderControl class table 0x%llX (scanned %llu MB)",
-					static_cast<unsigned long long>(g_controlTable),
-					static_cast<unsigned long long>(scanned >> 20));
-				g_controlReason = buf;
-				return false;
-			}
-
-			g_control = slot;
-			g_controlAnchored = anchored;
-
-			// A pointer slot in the image that names the instance is the owning global and must be recorded.
-			const auto object = slot;
-			std::uint64_t slotScan = 0;
-			g_controlSlot = ScanAreaFor(ScanArea::ImageData, slotScan,
-				[object](std::uintptr_t value, std::uintptr_t candidate)
-				{
-					return value == object && candidate != object;
-				});
-
+			g_cameraSource = "image global";
+			g_cameraReason.clear();
 			return true;
-		}
-
-		// The camera path must only read what load time resolved; it never walks.
-		std::uintptr_t CachedRenderControl(HWND& window, std::string& reason)
-		{
-			window = FindRenderWindow();
-			if (!window)
-			{
-				reason = "no MonitorClass render window yet";
-				return 0;
-			}
-
-			if (!g_control)
-			{
-				reason = g_controlReason.empty()
-					? "the render control was not resolved when the plugin loaded"
-					: g_controlReason;
-				return 0;
-			}
-
-			bool anchored = false;
-			if (!ReadsAsRenderControl(g_control, window, anchored))
-			{
-				reason = "the render control resolved at load no longer validates; restart the editor";
-				return 0;
-			}
-
-			g_controlAnchored = anchored;
-			return g_control;
 		}
 
 		// CKPE loads plugins before the editor creates the render window, so it must be waited for on a timer.
@@ -427,73 +228,35 @@ namespace ckagent
 				return;
 
 			if (!SetTimer(g_window, kResolveTimer, kResolveInterval, nullptr))
-				CKPE::PluginAPI::_WARNING("CKAgent: could not arm the render control resolver");
+				CKPE::PluginAPI::_WARNING("CKAgent: could not arm the camera resolver");
 		}
 
 		bool ToolCamera(const std::string& args, std::string& payload,
 			std::string& errorCode, std::string& errorMessage)
 		{
-			HWND window = nullptr;
-			std::string reason;
-			const auto control = CachedRenderControl(window, reason);
-			if (!control)
-			{
-				errorCode = "render_control_unresolved";
-				errorMessage = reason;
-				return false;
-			}
-
-			const auto camera = *reinterpret_cast<std::uintptr_t*>(control + 0x58);
-			if (!camera || !IsReadable(reinterpret_cast<void*>(camera), 0xB0))
+			if (!ResolveNow(g_cameraWhen))
 			{
 				errorCode = "camera_unavailable";
-				errorMessage = "the render control has no camera; load a cell first";
+				errorMessage = g_cameraReason;
 				return false;
 			}
 
-			auto* translate = reinterpret_cast<float*>(camera + 0xA0);
-			auto* rotate = reinterpret_cast<float*>(camera + 0x70);
-			const float scale = *reinterpret_cast<float*>(camera + 0xAC);
-
-			float x = 0, y = 0, z = 0, yaw = 0, pitch = 0;
-			const bool oriented = std::sscanf(args.c_str(), "set %f %f %f %f %f", &x, &y, &z, &yaw, &pitch) == 5;
-			const bool moved = oriented || std::sscanf(args.c_str(), "set %f %f %f", &x, &y, &z) == 3;
-
-			if (moved)
+			// BGSRenderWindowCamera's pose fields must be mapped before a float is read or written.
+			if (args.rfind("set", 0) == 0)
 			{
-				translate[0] = x;
-				translate[1] = y;
-				translate[2] = z;
-
-				if (oriented)
-				{
-					// Rotation must stay unverified until Gamebryo's basis is confirmed visually.
-					const float cy = std::cos(yaw), sy = std::sin(yaw);
-					const float cp = std::cos(pitch), sp = std::sin(pitch);
-
-					rotate[0] = cy;          rotate[1] = sy;         rotate[2] = 0;   rotate[3] = 0;
-					rotate[4] = -sy * cp;    rotate[5] = cy * cp;    rotate[6] = sp;  rotate[7] = 0;
-					rotate[8] = sy * sp;     rotate[9] = -cy * sp;   rotate[10] = cp; rotate[11] = 0;
-				}
+				errorCode = "camera_transform_unmapped";
+				errorMessage = "BGSRenderWindowCamera's pose offsets are unmapped (findings/ckpe-render-control.md)";
+				return false;
 			}
 
-			// The reply must say which object was used: a resolution and a guess have to look different.
-			char buf[896];
+			char buf[384];
 			std::snprintf(buf, sizeof buf,
-				"{\"camera\":\"0x%llX\",\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"scale\":%.4f,"
-				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],"
-				"\"moved\":%s,\"rotationVerified\":false,"
-				"\"control\":\"0x%llX\",\"controlSource\":\"%s\",\"controlAt\":\"%s\","
-				"\"global\":\"0x%llX\",\"anchored\":%s}",
-				static_cast<unsigned long long>(camera),
-				translate[0], translate[1], translate[2], scale,
-				rotate[0], rotate[1], rotate[2], rotate[4], rotate[5], rotate[6], rotate[8], rotate[9], rotate[10],
-				moved ? "true" : "false",
-				static_cast<unsigned long long>(control),
-				g_controlSource,
-				g_controlWhen,
-				static_cast<unsigned long long>(g_controlSlot),
-				g_controlAnchored ? "true" : "false");
+				"{\"window\":\"0x%llX\",\"camera\":\"0x%llX\","
+				"\"cameraClass\":\"BGSRenderWindowCamera\",\"transform\":\"unmapped\","
+				"\"resolvedAt\":\"%s\"}",
+				static_cast<unsigned long long>(g_renderWindow),
+				static_cast<unsigned long long>(g_camera),
+				g_cameraWhen);
 
 			payload = buf;
 			return true;
@@ -549,24 +312,18 @@ namespace ckagent
 		{
 			if (msg == WM_TIMER && wParam == kResolveTimer)
 			{
-				if (!FindRenderWindow())
+				if (ResolveNow("deferred"))
 				{
-					// Waiting costs nothing; two walks after the window appears must be the whole cost.
-					if (++g_resolveTicks >= kResolveWindowTicks)
-					{
-						KillTimer(hWnd, kResolveTimer);
-						g_controlReason = "the render window never appeared after load";
-					}
+					KillTimer(hWnd, kResolveTimer);
 					return 0;
 				}
 
-				KillTimer(hWnd, kResolveTimer);
-
-				if (ResolveNow("deferred"))
-					return 0;
-
-				if (++g_resolveWalks < kResolveWalks)
-					SetTimer(g_window, kResolveTimer, kResolveInterval, nullptr);
+				// The editor must create its window before the anchors can hold; give up after the same window.
+				if (++g_resolveTicks >= kResolveWindowTicks)
+				{
+					KillTimer(hWnd, kResolveTimer);
+					g_cameraReason = "the render window never appeared after load";
+				}
 
 				return 0;
 			}
@@ -753,13 +510,15 @@ namespace ckagent
 		// Load-time resolution: the camera path must never walk memory.
 		if (ResolveNow("load"))
 		{
-			CKPE::PluginAPI::_MESSAGE("CKAgent: render control 0x%llX from %s",
-				static_cast<unsigned long long>(g_control), g_controlSource);
+			CKPE::PluginAPI::_MESSAGE("CKAgent: render window 0x%llX, camera 0x%llX from %s",
+				static_cast<unsigned long long>(g_renderWindow),
+				static_cast<unsigned long long>(g_camera),
+				g_cameraSource);
 		}
 		else
 		{
-			CKPE::PluginAPI::_MESSAGE("CKAgent: render control not ready (%s); waiting for the render window",
-				g_controlReason.c_str());
+			CKPE::PluginAPI::_MESSAGE("CKAgent: camera not ready (%s); waiting for the render window",
+				g_cameraReason.c_str());
 			ArmResolveTimer();
 		}
 

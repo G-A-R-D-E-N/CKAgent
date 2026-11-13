@@ -256,7 +256,7 @@ public sealed class CkTools
     }
 }
 
-// Camera reads must go through the plugin: only it can reach the live NiCamera.
+// Camera reads must go through the plugin: only it can read the live window object.
 public sealed record CameraResult(
     string Status,
     string Code,
@@ -271,8 +271,9 @@ public sealed class CameraTools
     public CameraTools(PluginClient plugin) => _plugin = plugin;
 
     [McpServerTool(Name = "ck.camera"),
-     Description("Read or set the render window camera through the CKAgent plugin: mode=Get returns " +
-                 "position and rotation; mode=Set with x/y/z (and optionally yaw/pitch) moves it. " +
+     Description("Read the render window and its camera through the CKAgent plugin: mode=Get reports " +
+                 "the window and camera addresses and their class tables. mode=Set is refused with " +
+                 "camera_transform_unmapped until that camera's pose fields are mapped. " +
                  "Requires CKPE plus CKAgent.dll in <game>\\CKPEPlugins\\.")]
     public CameraResult Camera(string mode = "get", double? x = null, double? y = null, double? z = null,
                                double? yaw = null, double? pitch = null)
