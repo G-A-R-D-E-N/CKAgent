@@ -33,6 +33,7 @@ endforeach()
 add_library(CKAgentPlugin SHARED
   dllmain.cpp
   Agent.cpp
+  AgentUi.cpp
 )
 
 target_include_directories(CKAgentPlugin PRIVATE

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -19,6 +20,7 @@
 #include <EditorAPI/T/TES.h>
 
 #include "Agent.h"
+#include "AgentUi.h"
 #include "Protocol.h"
 
 namespace ckagent
@@ -26,6 +28,17 @@ namespace ckagent
 	namespace
 	{
 		using TES = CKPE::Fallout4::EditorAPI::TES;
+
+		// Every diagnostic must be one line, so the editor's Log Window stays readable.
+		std::string Format(const char* fmt, ...)
+		{
+			char buf[1024];
+			va_list args;
+			va_start(args, fmt);
+			std::vsnprintf(buf, sizeof buf, fmt, args);
+			va_end(args);
+			return buf;
+		}
 
 		// Every image address must be rebased: the editor is relocated and never loads at 0x140000000.
 		constexpr std::uintptr_t kTesSingletonOffset = 0x3D49150;       // offset of the TES singleton pointer
@@ -202,6 +215,8 @@ namespace ckagent
 
 		// Resolution must be retried on a timer: CKPE loads plugins before the editor builds its window.
 		constexpr UINT_PTR kResolveTimer = 1;
+		constexpr UINT_PTR kUiTimer = 2;      // the button must appear even when the camera never resolves
+		bool g_uiTicked = false;              // the first timer tick must be visible in the log
 		constexpr UINT kResolveInterval = 500;
 		constexpr UINT kResolveWindowTicks = 120;
 
@@ -243,7 +258,7 @@ namespace ckagent
 				return;
 
 			if (!SetTimer(g_window, kResolveTimer, kResolveInterval, nullptr))
-				CKPE::PluginAPI::_WARNING("CKAgent: could not arm the camera resolver");
+				LogLine("CKAgent: could not arm the camera resolver");
 		}
 
 		// The window's camera must carry the scene's NiCamera; the transform is only read through it.
@@ -449,6 +464,21 @@ namespace ckagent
 
 		LRESULT CALLBACK DispatchProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		{
+			if (msg == WM_TIMER && wParam == kUiTimer)
+			{
+				// A silent timer and a missing frame must be distinguishable in the log.
+				if (!g_uiTicked)
+				{
+					g_uiTicked = true;
+					LogLine("CKAgent: the editor UI timer is running");
+				}
+
+				// The button must be retried until the frame exists, then this timer is done.
+				if (EnsureUi())
+					KillTimer(hWnd, kUiTimer);
+				return 0;
+			}
+
 			if (msg == WM_TIMER && wParam == kResolveTimer)
 			{
 				if (ResolveNow("deferred"))
@@ -578,6 +608,15 @@ namespace ckagent
 			return true;
 		}
 
+		// A logged reply must not carry its newline into the window transcript.
+		std::string Trimmed(const std::string& text)
+		{
+			std::size_t end = text.size();
+			while (end > 0 && (text[end - 1] == '\n' || text[end - 1] == '\r'))
+				--end;
+			return text.substr(0, end);
+		}
+
 		void ServeClient(HANDLE pipe)
 		{
 			char helo[128];
@@ -599,6 +638,7 @@ namespace ckagent
 					return;
 
 				RunOnEditorThread(call);
+				LogLine("CALL " + call.request + " -> " + Trimmed(call.reply));
 				const bool written = WriteAll(pipe, call.reply);
 				CloseHandle(call.done);
 				if (!written)
@@ -606,10 +646,24 @@ namespace ckagent
 			}
 		}
 
+		// The window must report what the plugin actually resolved, not what it hopes for.
+		std::string StateText()
+		{
+			return Format("CKAgent  build %s  pid %lu\r\n"
+				"window 0x%llX   camera 0x%llX   via %s\r\n"
+				"camera: %s",
+				kSupportedEditorBuild,
+				GetCurrentProcessId(),
+				static_cast<unsigned long long>(g_renderWindow),
+				static_cast<unsigned long long>(g_camera),
+				g_cameraSource,
+				g_camera ? "resolved" : (g_cameraReason.empty() ? "unresolved" : g_cameraReason.c_str()));
+		}
+
 		void WorkerLoop()
 		{
 			// The worker must announce itself: a pipe that never appears has to be distinguishable from one that failed.
-			CKPE::PluginAPI::_MESSAGE("CKAgent: worker started (pid %lu)", GetCurrentProcessId());
+			LogLine(Format("CKAgent: worker started (pid %lu)", GetCurrentProcessId()));
 
 			while (g_running.load())
 			{
@@ -620,7 +674,7 @@ namespace ckagent
 
 				if (pipe == INVALID_HANDLE_VALUE)
 				{
-					CKPE::PluginAPI::_ERROR("CKAgent: CreateNamedPipe failed (%lu)", GetLastError());
+					LogLine(Format("CKAgent: CreateNamedPipe failed (%lu)", GetLastError()));
 					return;
 				}
 
@@ -646,32 +700,38 @@ namespace ckagent
 		g_threadOk = g_buildSupported && CreateDispatchWindow();
 
 		if (!g_buildSupported)
-			CKPE::PluginAPI::_ERROR("CKAgent: editor build %s is not supported (need %s)",
-				FormatBuild(runtimeVersion).c_str(), kSupportedEditorBuild);
+			LogLine(Format("CKAgent: editor build %s is not supported (need %s)",
+				FormatBuild(runtimeVersion).c_str(), kSupportedEditorBuild));
 
 		if (!g_threadOk)
 			return false;
 
+		// The window must be able to describe the plugin state on its own.
+		SetStateProvider(StateText);
+
 		// Load-time resolution: the camera path must never walk memory.
 		if (ResolveNow("load"))
 		{
-			CKPE::PluginAPI::_MESSAGE("CKAgent: render window 0x%llX, camera 0x%llX from %s",
+			LogLine(Format("CKAgent: render window 0x%llX, camera 0x%llX from %s",
 				static_cast<unsigned long long>(g_renderWindow),
 				static_cast<unsigned long long>(g_camera),
-				g_cameraSource);
+				g_cameraSource));
 		}
 		else
 		{
-			CKPE::PluginAPI::_MESSAGE("CKAgent: camera not ready (%s); waiting for the render window",
-				g_cameraReason.c_str());
+			LogLine(Format("CKAgent: camera not ready (%s); waiting for the render window",
+				g_cameraReason.c_str()));
 			ArmResolveTimer();
 		}
+
+		// The button must be installed as soon as the frame exists, so a timer retries it.
+		SetTimer(g_window, kUiTimer, 500, nullptr);
 
 		g_running = true;
 		g_worker = std::thread(WorkerLoop);
 
-		CKPE::PluginAPI::_MESSAGE("CKAgent: serving on %ls for build %s",
-			kPipeName, FormatBuild(runtimeVersion).c_str());
+					LogLine(Format("CKAgent: serving on %ls for build %s",
+				kPipeName, FormatBuild(runtimeVersion).c_str()));
 		return true;
 	}
 
@@ -692,6 +752,7 @@ namespace ckagent
 		if (g_window)
 		{
 			KillTimer(g_window, kResolveTimer);
+			KillTimer(g_window, kUiTimer);
 			DestroyWindow(g_window);
 			g_window = nullptr;
 		}
