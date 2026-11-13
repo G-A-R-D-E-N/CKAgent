@@ -2,17 +2,22 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
+#include <CKPE.Common.AddressLibrary.h>
 #include <CKPE.PluginAPI.PluginAPI.h>
 #include <EditorAPI/T/TES.h>
+#include <EditorAPI/T/TESRenderControl.h>
 
 #include "Agent.h"
 #include "Protocol.h"
@@ -22,6 +27,7 @@ namespace ckagent
 	namespace
 	{
 		using TES = CKPE::Fallout4::EditorAPI::TES;
+		using RenderControl = CKPE::Fallout4::EditorAPI::TESRenderControl;
 
 		// CKPE fixes the image base; this is the TES_Singleton address CKPE records for 1.11.246.0.
 		constexpr std::uintptr_t kTesSingleton = 0x143D49150;
@@ -42,6 +48,13 @@ namespace ckagent
 		std::atomic<bool> g_running{ false };
 		std::atomic<bool> g_threadOk{ false };
 		bool g_buildSupported = false;
+
+		// Resolution state; only the editor thread must touch it.
+		std::uintptr_t g_controlTable = 0;
+		std::uintptr_t g_control = 0;
+		std::uintptr_t g_controlSlot = 0;
+		const char* g_controlSource = "none";
+		bool g_controlAnchored = false;
 
 		std::string FormatBuild(std::uint64_t version)
 		{
@@ -148,7 +161,154 @@ namespace ckagent
 			return context.found;
 		}
 
-		// Nothing is dereferenced until DialogWindow and DisplayControlID both check out: the published object must match.
+		// The class table must come from CKPE's ID database: one stable ID for every build.
+		std::uintptr_t RenderControlTable()
+		{
+			static constexpr CKPE::Common::ID kTable = RenderControl::VTABLE // findings/ckpe-render-control.md stands behind this address
+				;
+
+			if (g_controlTable)
+				return g_controlTable;
+
+			const auto iddb = CKPE::Common::AddressLibrary::GetSingleton();
+			if (!iddb || !iddb->IsLoaded())
+				return 0;
+
+			// A zero offset means no entry for this build; the module base alone must never be used.
+			if (!kTable.Id() || !kTable.Offset())
+				return 0;
+
+			g_controlTable = kTable.Address();
+			return g_controlTable;
+		}
+
+		// Exact class table, then the two fields that define the layout: nothing must be dereferenced on a guess.
+		bool ReadsAsRenderControl(std::uintptr_t object, HWND renderWindow, bool& anchored)
+		{
+			anchored = false;
+
+			if (!object || (object & (sizeof(std::uintptr_t) - 1)))
+				return false;
+			if (!IsReadable(reinterpret_cast<const void*>(object), sizeof(RenderControl)))
+				return false;
+			if (*reinterpret_cast<const std::uintptr_t*>(object) != g_controlTable)
+				return false;
+
+			const auto* control = reinterpret_cast<const RenderControl*>(object);
+			if (!control->DialogWindow || !IsWindow(control->DialogWindow))
+				return false;
+
+			const auto display = static_cast<int>(control->DisplayControlID);
+			if (display <= 0 || display > 0xFFFF)
+				return false;
+
+			const auto child = GetDlgItem(control->DialogWindow, display);
+			if (!child)
+				return false;
+
+			for (auto window = child; window; window = GetParent(window))
+			{
+				if (window == renderWindow)
+				{
+					anchored = true;
+					break;
+				}
+			}
+
+			return true;
+		}
+
+		// Reads must go through ReadProcessMemory: another editor thread can free a page mid-walk.
+		constexpr std::size_t kScanChunk = 32 * 1024;
+		constexpr std::uint64_t kScanBudget = 6ull * 1024 * 1024 * 1024;
+
+		template <class Match>
+		std::uintptr_t ScanMemory(std::uintptr_t begin, std::uintptr_t end, std::uint64_t& scanned, Match&& match)
+		{
+			std::vector<std::uint8_t> buffer(kScanChunk);
+
+			for (auto at = begin; at < end && scanned < kScanBudget; )
+			{
+				const auto want = static_cast<std::size_t>(std::min<std::uintptr_t>(kScanChunk, end - at));
+				SIZE_T got = 0;
+				if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(at),
+						buffer.data(), want, &got) || got < sizeof(std::uintptr_t))
+				{
+					at += want;
+					continue;
+				}
+
+				scanned += got;
+
+				for (std::size_t i = 0; i + sizeof(std::uintptr_t) <= got; i += sizeof(std::uintptr_t))
+				{
+					const auto slot = at + i;
+					if (slot & (sizeof(std::uintptr_t) - 1))
+						continue;
+
+					std::uintptr_t value = 0;
+					std::memcpy(&value, buffer.data() + i, sizeof value);
+					if (value && match(value, slot))
+						return slot;
+				}
+
+				at += got;
+			}
+
+			return 0;
+		}
+
+		enum class ScanArea
+		{
+			ImageData,
+			Private
+		};
+
+		// The image must be walked first: it is small, and it is where an owning global lives.
+		template <class Match>
+		std::uintptr_t ScanAreaFor(ScanArea area, std::uint64_t& scanned, Match&& match)
+		{
+			const auto moduleBase = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+
+			SYSTEM_INFO info{};
+			GetSystemInfo(&info);
+
+			const auto limit = reinterpret_cast<std::uintptr_t>(info.lpMaximumApplicationAddress);
+
+			for (auto at = reinterpret_cast<std::uintptr_t>(info.lpMinimumApplicationAddress);
+				at < limit && scanned < kScanBudget; )
+			{
+				MEMORY_BASIC_INFORMATION region{};
+				if (!VirtualQuery(reinterpret_cast<const void*>(at), &region, sizeof region) || !region.RegionSize)
+				{
+					at += 0x1000;
+					continue;
+				}
+
+				const auto base = reinterpret_cast<std::uintptr_t>(region.BaseAddress);
+				const auto size = static_cast<std::uintptr_t>(region.RegionSize);
+
+				const bool writable = region.State == MEM_COMMIT &&
+					!(region.Protect & (PAGE_NOACCESS | PAGE_GUARD)) &&
+					(region.Protect & (PAGE_READWRITE | PAGE_WRITECOPY));
+
+				const bool wanted = writable && (area == ScanArea::ImageData
+					? region.Type == MEM_IMAGE && reinterpret_cast<std::uintptr_t>(region.AllocationBase) == moduleBase
+					: region.Type == MEM_PRIVATE);
+
+				if (wanted)
+				{
+					if (const auto hit = ScanMemory(base, base + size, scanned, match))
+						return hit;
+				}
+
+				at = base + size;
+			}
+
+			return 0;
+		}
+
+		// Ordering: cached instance, the editor's own data, then its heap.
 		std::uintptr_t ResolveRenderControl(HWND& window, std::string& reason)
 		{
 			window = FindRenderWindow();
@@ -158,40 +318,71 @@ namespace ckagent
 				return 0;
 			}
 
-			auto candidate = reinterpret_cast<std::uintptr_t>(GetWindowLongPtrW(window, GWLP_USERDATA));
-			if (!candidate)
+			if (!RenderControlTable())
 			{
-				reason = "the render window published nothing in GWLP_USERDATA";
+				reason = "CKPE's ID database has no TESRenderControl class table for this editor build";
 				return 0;
 			}
 
-			if (!IsReadable(reinterpret_cast<void*>(candidate), 0x68))
+			bool anchored = false;
+			if (g_control && ReadsAsRenderControl(g_control, window, anchored))
 			{
-				reason = "GWLP_USERDATA is not a readable object";
-				return 0;
+				g_controlAnchored = anchored;
+				return g_control;
 			}
 
-			const auto dialog = *reinterpret_cast<HWND*>(candidate + 0x08);
-			const auto displayId = *reinterpret_cast<std::uint32_t*>(candidate + 0x10);
+			g_control = 0;
+			g_controlSlot = 0;
+			g_controlAnchored = false;
+			g_controlSource = "none";
 
-			char buf[256];
-			if (!dialog || !IsWindow(dialog))
+			std::uint64_t scanned = 0;
+			const auto matches = [&](std::uintptr_t, std::uintptr_t slot)
 			{
+				bool hitAnchored = false;
+				if (!ReadsAsRenderControl(slot, window, hitAnchored))
+					return false;
+
+				anchored = hitAnchored;
+				return true;
+			};
+
+			auto slot = ScanAreaFor(ScanArea::ImageData, scanned, matches);
+			if (slot)
+			{
+				g_controlSource = "image data";
+			}
+			else
+			{
+				slot = ScanAreaFor(ScanArea::Private, scanned, matches);
+				if (slot)
+					g_controlSource = "process heap";
+			}
+
+			if (!slot)
+			{
+				char buf[320];
 				std::snprintf(buf, sizeof buf,
-					"the published object is not a TESRenderControl (DialogWindow=0x%llX); "
-					"run tools/ck-surface-probe/render-control-probe.ps1",
-					static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(dialog)));
+					"nothing in memory carries CKPE's TESRenderControl class table 0x%llX (scanned %llu MB)",
+					static_cast<unsigned long long>(g_controlTable),
+					static_cast<unsigned long long>(scanned >> 20));
 				reason = buf;
 				return 0;
 			}
 
-			if (displayId == 0 || displayId > 65535 || !GetDlgItem(dialog, static_cast<int>(displayId)))
-			{
-				reason = "DialogWindow resolved but DisplayControlID does not name a child control";
-				return 0;
-			}
+			g_control = slot;
+			g_controlAnchored = anchored;
 
-			return candidate;
+			// A pointer slot in the image that names the instance is the owning global and must be recorded.
+			const auto object = slot;
+			std::uint64_t slotScan = 0;
+			g_controlSlot = ScanAreaFor(ScanArea::ImageData, slotScan,
+				[object](std::uintptr_t value, std::uintptr_t candidate)
+				{
+					return value == object && candidate != object;
+				});
+
+			return g_control;
 		}
 
 		bool ToolCamera(const std::string& args, std::string& payload,
@@ -241,15 +432,21 @@ namespace ckagent
 				}
 			}
 
-			char buf[640];
+			// The reply must say which object was used: a resolution and a guess have to look different.
+			char buf[896];
 			std::snprintf(buf, sizeof buf,
 				"{\"camera\":\"0x%llX\",\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"scale\":%.4f,"
 				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],"
-				"\"moved\":%s,\"rotationVerified\":false}",
+				"\"moved\":%s,\"rotationVerified\":false,"
+				"\"control\":\"0x%llX\",\"controlSource\":\"%s\",\"global\":\"0x%llX\",\"anchored\":%s}",
 				static_cast<unsigned long long>(camera),
 				translate[0], translate[1], translate[2], scale,
 				rotate[0], rotate[1], rotate[2], rotate[4], rotate[5], rotate[6], rotate[8], rotate[9], rotate[10],
-				moved ? "true" : "false");
+				moved ? "true" : "false",
+				static_cast<unsigned long long>(control),
+				g_controlSource,
+				static_cast<unsigned long long>(g_controlSlot),
+				g_controlAnchored ? "true" : "false");
 
 			payload = buf;
 			return true;
