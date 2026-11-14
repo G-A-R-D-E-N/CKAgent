@@ -325,10 +325,11 @@ public sealed class CameraTools
      Description("Rotate the camera until a named reference in the loaded cell is straight ahead, keeping " +
                  "the camera where it stands so the object is seen from the view already chosen. reference " +
                  "matches a reference EditorID, its base object EditorID, or an 8-digit form id; optional " +
-                 "distance backs the camera away to that standoff first. Reports the yaw and pitch it wrote " +
-                 "and the achieved aim, measured against the scene camera's own view row rather than the " +
-                 "matrix just written, so an object above or " +
-                 "below the camera is aimed at rather than reported as a miss. Needs a loaded cell " +
+                 "distance backs the camera away to that standoff first, and the tilt is computed from where " +
+                 "that leaves the camera. A target straight above or below it keeps the current heading and " +
+                 "tilts to the pole. Reports the yaw and pitch it wrote and the achieved aim, measured " +
+                 "against the scene camera's own view row rather than the matrix just written, so an object " +
+                 "above or below the camera is centred rather than reported as a miss. Needs a loaded cell " +
                  "and CKPE with CKAgent.dll installed.")]
     public CameraResult Aim(string reference, double? distance = null)
     {

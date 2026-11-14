@@ -294,28 +294,56 @@ namespace ckagent
 		const NiPoint3 targetPoint = hit.ref->GetPosition();
 		const NiPoint3 before = camera->GetPosition();
 
-		// Constraint: the yaw must come from the direction that actually joins camera to target, not a guess.
+		// Constraint: the pitch must come from where the camera ends up, or a standoff tilts at the old distance.
 		const double dx = static_cast<double>(targetPoint.x) - before.x;
 		const double dy = static_cast<double>(targetPoint.y) - before.y;
 		const double dz = static_cast<double>(targetPoint.z) - before.z;
 		const double horizontal = std::sqrt(dx * dx + dy * dy);
-		if (horizontal < 1e-3)
+
+		// Invariant: a target straight above or below has no yaw of its own, so the view heading is kept.
+		float headingX = 1.0f;
+		float headingY = 0.0f;
+		if (horizontal > 1e-3)
+		{
+			headingX = static_cast<float>(dx / horizontal);
+			headingY = static_cast<float>(dy / horizontal);
+		}
+		else
+		{
+			float forward[3] = { 0.0f, 0.0f, 0.0f };
+			if (ReadSceneView(camera, forward))
+			{
+				const double flat = std::sqrt(static_cast<double>(forward[0]) * forward[0] +
+					static_cast<double>(forward[1]) * forward[1]);
+				if (flat > 1e-4)
+				{
+					headingX = static_cast<float>(forward[0] / flat);
+					headingY = static_cast<float>(forward[1] / flat);
+				}
+			}
+		}
+
+		// Constraint: a standoff is optional, so the camera must keep its own height and only back away when asked.
+		const float px = distance > 1.0f ? targetPoint.x - distance * headingX : before.x;
+		const float py = distance > 1.0f ? targetPoint.y - distance * headingY : before.y;
+
+		const double outX = static_cast<double>(targetPoint.x) - px;
+		const double outY = static_cast<double>(targetPoint.y) - py;
+		const double outZ = static_cast<double>(targetPoint.z) - before.z;
+		const double flatSpan = std::sqrt(outX * outX + outY * outY);
+		const double reach = std::sqrt(outX * outX + outY * outY + outZ * outZ);
+		if (reach < 1e-3)
 		{
 			errorCode = "too_close";
-			errorMessage = "the camera is directly above or below " + hit.id + "; step sideways before aiming";
+			errorMessage = "the camera is on top of " + hit.id + "; there is no direction to aim";
 			return false;
 		}
 
-		const float yaw = static_cast<float>(std::atan2(dy, dx));
-
-		// A target above or below the camera must tilt the view, because the forward row carries the pitch.
-		const float pitch = static_cast<float>(std::atan2(dz, horizontal));
-
-		// Constraint: a standoff is optional, so the camera must keep its own height and only back away when asked.
-		const float px = distance > 1.0f ? targetPoint.x - distance * static_cast<float>(std::cos(yaw))
-		                                 : before.x;
-		const float py = distance > 1.0f ? targetPoint.y - distance * static_cast<float>(std::sin(yaw))
-		                                 : before.y;
+		// Invariant: at the pole the yaw is whatever the heading was, and the pitch is the pole itself.
+		const float yaw = flatSpan > 1e-4 ? static_cast<float>(std::atan2(outY, outX))
+		                                 : static_cast<float>(std::atan2(headingY, headingX));
+		const float pitch = flatSpan > 1e-4 ? static_cast<float>(std::atan2(outZ, flatSpan))
+		                                   : (outZ > 0.0 ? 1.5707963f : -1.5707963f);
 		SetViewPose(camera, px, py, before.z, yaw, pitch);
 
 		const NiPoint3 after = camera->GetPosition();
