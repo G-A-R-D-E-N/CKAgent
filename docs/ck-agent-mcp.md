@@ -297,6 +297,13 @@ belongs on a machine that deliberately keeps the low pipe closed. Measured now: 
 full run exits 3 on the opt-in half because the loose pipe does not admit this client yet — the probe is red
 exactly where the feature is.
 
+`tools/pipe-denied-repro.ps1` is the narrower run: it reproduces the refusal from the low apphost and checks the
+message itself — code `pipe_denied`, the Win32 error `0x80070005`, this client's level, both switches, and that it
+does not blame a stale plugin — then records what the same call answers with `--allow-low-pipe`, because a diagnosis
+is only useful if it leads somewhere. Measured: passes. The recorded opt-in line was wrong on the first run, telling
+the reader to install a plugin that was running; it now says the editor answered neither pipe and to check the ini
+before it started.
+
 One trap found while measuring: CKPE loads every DLL in `CKPEPlugins`, so a backup copy left beside the plugin
 competes for the pipe name. The log showed the second module dying with `CreateNamedPipe failed (231)`
 (`ERROR_PIPE_BUSY`) while the first served, which makes any pipe result read as if the new build were loaded when

@@ -340,6 +340,10 @@ asserts the default pipe refuses it with a message naming both switches, that `-
 just the refusal, for a machine that keeps the low pipe closed. Today the strict half passes and the full run
 exits 3 on the opt-in half, which is the open transport bug written down where it will be noticed.
 
+`tools/pipe-denied-repro.ps1` covers the refusal message on its own: it reproduces `pipe_denied` from the low
+exe and asserts the text carries the Win32 error, this client's level and both switches, and does not blame a
+stale plugin, then records what the same call answers with `--allow-low-pipe`.
+
 `tools/cell-probe.ps1` covers the naming contract. It picks cells from the Cell View's own list, opens each
 with `ui.cellload`, and asserts `ck.cell` names the cell that was opened: `editorId` equal to the row,
 `formId` equal to the row's form id, the placement fields present, grid `0, 0` for an interior cell, a

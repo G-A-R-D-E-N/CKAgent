@@ -84,7 +84,11 @@ public sealed class PluginClient : IPluginCaller
                 code = "CKPEUnavailable";
                 message = $"no CKAgent plugin is listening on {PluginPipes.Describe(_allowLowPipe)}; install and " +
                           "enable CKPE with CKAgent.dll in <game>\\CKPEPlugins\\" +
-                          (_allowLowPipe ? string.Empty : "; the low-labelled pipe needs --allow-low-pipe as well");
+                          (_allowLowPipe
+                              ? "; this host opted in, so a running editor that answered neither did not open " +
+                                "the low-labelled pipe - check [transport] LowIntegrityPipe=1 in CKAgent.ini " +
+                                "before it started"
+                              : "; the low-labelled pipe needs --allow-low-pipe as well");
                 return false;
             }
             catch (IOException exception)
