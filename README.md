@@ -159,6 +159,9 @@ cmake --build build/ckagent --config Release
 - `CKPE_ROOT` is the checkout; the three import libraries are read from `<CKPE_ROOT>/x64`.
 - `CKPE_PLUGIN_DIR` is optional. When set, the build copies the DLL into the game's `CKPEPlugins\` folder
   as `CKAgent.dll`. Without it, take `build/ckagent/CKAgentPlugin.dll` and copy it there under that name.
+  The install is verified: it compares the hash of the copied file against the build and fails the build with the
+  path named when the editor has the DLL loaded, so a build never reports success while the previous plugin is
+  still the one on disk.
 - Ninja is single-config, so the binary lands in `build/ckagent/`. A `-G "Visual Studio 17 2022" -A x64`
   configure works too, and then the path carries `\Release\`.
 - Configure fails with an actionable message when `CKPE_ROOT` is unset, when an import library is missing,

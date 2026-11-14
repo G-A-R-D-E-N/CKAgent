@@ -70,9 +70,16 @@ set_target_properties(CKAgentPlugin PROPERTIES
 # CKPE loads plugins from <GAMEDIR>\CKPEPlugins\.
 set(CKPE_PLUGIN_DIR "" CACHE PATH "Optional: copy the built plugin here (…\\Fallout 4\\CKPEPlugins)")
 if(CKPE_PLUGIN_DIR)
+  # Constraint: the install verifies what it copied, because a DLL the editor holds is otherwise left stale.
+  # Constraint: the paths travel inside a generated script, since a -D argument splits on the space in "Fallout 4".
+  set(CKAGENT_INSTALL_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/install-plugin.cmake")
+  file(WRITE "${CKAGENT_INSTALL_SCRIPT}"
+    "set(SRC \"${CMAKE_CURRENT_BINARY_DIR}/CKAgentPlugin.dll\")\n"
+    "set(DEST \"${CKPE_PLUGIN_DIR}/CKAgent.dll\")\n"
+    "include(\"${CMAKE_CURRENT_SOURCE_DIR}/InstallPlugin.cmake\")\n")
+
   add_custom_command(TARGET CKAgentPlugin POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CKPE_PLUGIN_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "$<TARGET_FILE:CKAgentPlugin>" "${CKPE_PLUGIN_DIR}/CKAgent.dll"
-    COMMENT "Installing CKAgent.dll into ${CKPE_PLUGIN_DIR}")
+    COMMAND ${CMAKE_COMMAND} -P "${CKAGENT_INSTALL_SCRIPT}"
+    COMMENT "Installing CKAgent.dll into ${CKPE_PLUGIN_DIR}"
+    VERBATIM)
 endif()
