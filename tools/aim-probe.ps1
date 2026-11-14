@@ -20,13 +20,17 @@ report and the pose are checked separately:
   4. three cases ask for a standoff - from above the target, from below it, and level with it - where the
      camera must move to exactly that distance, the tilt must come from the new position rather than the
      old one, and its sign must follow which side the camera stands on;
-  5. one case aims at two references in a single call, which must rotate in place for both, report each
+  5. four cases ask for level, which trades centring for a horizon: pitch must be written as 0 and the
+     view row must come back flat, the heading must still reach the target (yawAim 1), and the aim
+     reported must drop to the cosine of the target's elevation rather than claiming a centre it did not
+     take - from above, from below, level, and level beside a standoff;
+  6. one case aims at two references in a single call, which must rotate in place for both, report each
      step's own tilt, finish on the last target, and refuse a standoff that would move the camera;
-  6. last, ck.frame poses the camera as well as aims it, so its centring is checked the same way: the
+  7. next, ck.frame poses the camera as well as aims it, so its centring is checked the same way: the
      reported aim must be 1.0, the camera must stand exactly the reported distance from the box centre
      it framed, and the view row re-read afterwards must dot that centre - not the object's position,
      which differs from it whenever the bounding box is offset from the reference's origin;
-  7. that frame runs twice, at the fitted distance and at three times it, because its tilt is a fixed 30
+  8. that frame runs twice, at the fitted distance and at three times it, because its tilt is a fixed 30
      degrees: the height above the centre must be half the distance and the flat part cos 30 of it at
      both, which is the only thing that would show a tilt taken from the other standoff, since a pose
      derived from a wrong pitch still centres the box and reports aim 1.
@@ -377,7 +381,120 @@ foreach ($case in $standoffCases) {
     $observed[$name] = $record
 }
 
-# 4. A chain must rotate in place for every target and report each step, so aiming at only the first one fails.
+# 4. level is the opposite trade: the heading reaches the target and the tilt is refused, so the reply must
+# write pitch 0 and measure the swing with yawAim, while aim falls below 1 whenever the target is not level
+# with the camera. The last case asks for a standoff as well, so both words have to survive the parse.
+$levelCases = @(
+    @{ name = 'level-above';        dx = $Distance; dy = 0.0;    dz = 300.0; standoff = $null },
+    @{ name = 'level-below';        dx = $Distance; dy = 0.0;    dz = -300.0; standoff = $null },
+    @{ name = 'level-level';        dx = $Distance; dy = 0.0;    dz = 0.0;    standoff = $null },
+    @{ name = 'level-with-standoff'; dx = 300.0;    dy = -200.0; dz = 200.0; standoff = 256 }
+)
+
+foreach ($case in $levelCases) {
+    $name = $case.name
+    $placed = "camera set $(Format-Number ($target[0] + $case.dx)) $(Format-Number ($target[1] + $case.dy)) $(Format-Number ($target[2] + $case.dz)) 0 0"
+    Invoke-Plugin $placed | Out-Null
+    $before = Get-Camera
+
+    $request = @{ reference = $targetId; level = $true }
+    if ($null -ne $case.standoff) { $request['distance'] = $case.standoff }
+    $reply = Invoke-Mcp 'ck.aim' ($request | ConvertTo-Json -Compress)
+    $record = [ordered]@{
+        placed = "$([math]::Round($before.x, 4)) $([math]::Round($before.y, 4)) $([math]::Round($before.z, 4))"
+        asked  = if ($null -ne $case.standoff) { "level $($case.standoff)" } else { 'level' }
+        status = $reply.status
+        code   = $reply.code
+    }
+
+    if ($reply.status -ne 'ok') {
+        $failures.Add("$name`: ck.aim level was refused ($($reply.code)): $($reply.message)")
+        $observed[$name] = $record
+        continue
+    }
+
+    $payload = $reply.payload | ConvertFrom-Json
+    $cam = @([double]$payload.camera[0], [double]$payload.camera[1], [double]$payload.camera[2])
+    $record['aim'] = $payload.aim
+    $record['yawAim'] = $payload.yawAim
+    $record['aligned'] = $payload.aligned
+    $record['level'] = $payload.level
+    $record['pitch'] = $payload.pitch
+    $record['camera'] = "$($cam[0]) $($cam[1]) $($cam[2])"
+
+    if ("$($payload.level)" -ne 'True') {
+        $failures.Add("$name`: the reply does not say it held the horizon (level=$($payload.level))")
+    }
+    if ([math]::Abs([double]$payload.pitch) -gt 1e-6) {
+        $failures.Add("$name`: pitch is $($payload.pitch), but a level aim must write 0 and keep the horizon")
+    }
+
+    # What the camera was asked to do is turn its heading onto the target, and that is what yawAim measures.
+    if ([double]$payload.yawAim -lt 0.9999) {
+        $failures.Add("$name`: yawAim is $($payload.yawAim), so the heading did not reach the target")
+    }
+    if ("$($payload.aligned)" -ne 'True') {
+        $failures.Add("$name`: the reply says aligned=$($payload.aligned) while yawAim is $($payload.yawAim)")
+    }
+
+    # Centring is measured honestly: the target is only centred if the camera is level with it.
+    $dx = $target[0] - $cam[0]
+    $dy = $target[1] - $cam[1]
+    $dz = $target[2] - $cam[2]
+    $flat = [math]::Sqrt($dx * $dx + $dy * $dy)
+    $length = [math]::Sqrt($dx * $dx + $dy * $dy + $dz * $dz)
+    $expectedAim = if ($length -gt 1e-3) { $flat / $length } else { 1.0 }
+    $record['expectedAim'] = [math]::Round($expectedAim, 4)
+    if ([math]::Abs([double]$payload.aim - $expectedAim) -gt 2e-3) {
+        $failures.Add("$name`: aim is $($payload.aim) but a level camera sees this target at $([math]::Round($expectedAim, 4)), so the report and the pose disagree")
+    }
+    if ([math]::Abs($case.dz) -gt 1.0 -and [double]$payload.aim -gt 0.99) {
+        $failures.Add("$name`: aim is $($payload.aim) from $(if ($case.dz -gt 0) { 'above' } else { 'below' }) the target, so it was tilted after all")
+    }
+
+    # The heading is the yaw to the target, so the reply's yaw must equal the angle to it.
+    if ($flat -gt 1e-3) {
+        $expectedYaw = [math]::Atan2($dy, $dx)
+        $record['expectedYaw'] = [math]::Round($expectedYaw, 4)
+        if ([math]::Abs([double]$payload.yaw - $expectedYaw) -gt 2e-3) {
+            $failures.Add("$name`: yaw is $($payload.yaw) but the target lies at $([math]::Round($expectedYaw, 4))")
+        }
+    }
+
+    if ($null -ne $case.standoff) {
+        $settled = [math]::Sqrt(([math]::Pow($cam[0] - $target[0], 2)) + ([math]::Pow($cam[1] - $target[1], 2)))
+        $record['horizontalDistance'] = [math]::Round($settled, 4)
+        if ([math]::Abs($settled - $case.standoff) -gt 1.0) {
+            $failures.Add("$name`: the camera settled $([math]::Round($settled, 4)) away, not the $($case.standoff) asked for beside level")
+        }
+    } else {
+        foreach ($axis in @('x', 'y', 'z')) {
+            $slot = @{ x = 0; y = 1; z = 2 }[$axis]
+            $drift = [math]::Abs($cam[$slot] - [double]$before.$axis)
+            if ($drift -gt 0.01) {
+                $failures.Add("$name`: the camera moved $([math]::Round($drift, 4)) on $axis, but level only turns it")
+            }
+        }
+    }
+
+    # A level horizon means the view row has no height, so this is what proves the tilt was refused.
+    $after = Get-Camera
+    $record['forwardUp'] = [math]::Round([double]$after.forward[2], 5)
+    if ([math]::Abs([double]$after.forward[2]) -gt 2e-3) {
+        $failures.Add("$name`: the view row points $([math]::Round([double]$after.forward[2], 4)) up, so the horizon is not level")
+    }
+    if ($flat -gt 1e-3) {
+        $heading = (([double]$after.forward[0] * $dx) + ([double]$after.forward[1] * $dy)) / $flat
+        $record['forwardFlatDot'] = [math]::Round($heading, 5)
+        if ($heading -lt 0.9999) {
+            $failures.Add("$name`: the flat view dots the target's direction at $([math]::Round($heading, 5)), so the heading is off")
+        }
+    }
+
+    $observed[$name] = $record
+}
+
+# 5. A chain must rotate in place for every target and report each step, so aiming at only the first one fails.
 # The names come from the cell itself: ck.frame names candidates when a reference is not found.
 $missed = Invoke-Mcp 'ck.frame' (@{ reference = 'ZZZNoSuchReference' } | ConvertTo-Json -Compress)
 $candidates = @()
@@ -557,6 +674,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output 'PASS ck.aim kept the camera in place and centred every target: level, above, below, overhead, at a standoff, and in a two-step chain; and ck.frame centred the box centre it framed'
+Write-Output 'PASS ck.aim kept the camera in place and centred every target - level, above, below, overhead, at a standoff, in a two-step chain - held the horizon when asked from above, below, level and beside a standoff, and ck.frame centred the box centre it framed at two distances'
 Write-Output $evidenceJson
 exit 0

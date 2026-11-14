@@ -70,7 +70,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | `ck.job_status` | job state, exit code, artifacts, captured `EditorWarnings.txt` |
 | `ck.job_log` | tail a job's console log |
 | `ck.frame` | load a cell and stand the camera in front of a named reference, sized from the reference's own bounds (`distance` overrides, `yaw` picks the side); a cell that is already open is not reloaded; reports the cell it actually used |
-| `ck.aim` | turn the camera onto a named reference without moving it; optional `distance` standoff |
+| `ck.aim` | turn the camera onto a named reference without moving it; optional `distance` standoff; `level` holds the horizon instead of centring and reports `yawAim` |
 | `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat`, `orbit` a reference name or a world point at a distance and angle, `rotate` through the editor's own RotateBy, `lens` (field of view in degrees, near and far planes, measured zoom, or a zoom factor) |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row |
 | `ck.cell_load` | open a cell exactly as double-clicking it does, and report the cell the render window holds afterwards; only reaches cells of the collection the Cell View's worldspace combo is showing |
@@ -287,7 +287,10 @@ aim is 1.0, the tilt equals the angle between camera and target, and the view ro
 that direction. Three cases ask for a standoff — from above the target, from below it and level with it —
 where the camera must settle exactly that far away, the tilt must come from the new position rather than the
 old one, and its sign must follow which side the camera stands on, since a tilt that is right in size but
-backwards still points at the sky. Another aims at two references in a single call, which
+backwards still points at the sky. Four further cases ask for `level`, where the pitch must be written as `0`,
+the re-read view row must come back flat, the heading must still reach the target, and the reported `aim` must
+fall to the cosine of the target's elevation rather than claiming a centre it never took. Another aims at two
+references in a single call, which
 must turn to each in order and finish on the last. The frame cases pose the camera with `ck.frame` and check
 its centring the same way — `aim` `1`, `aligned`, the camera exactly the reported `distance` from the box
 centre, and the re-read view row dotting that centre — because framing reports an aim too, and it is the box

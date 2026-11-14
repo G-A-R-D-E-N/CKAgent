@@ -391,16 +391,16 @@ public sealed class CameraTools
      Description("Rotate the camera until a named reference in the loaded cell is straight ahead, keeping " +
                  "the camera where it stands so the object is seen from the view already chosen. reference " +
                  "matches a reference EditorID, its base object EditorID, or an 8-digit form id, and may be a " +
-                 "comma-joined list aimed in order from the same camera position, which scans a small area " +
-                 "without the caller computing poses; optional " +
-                 "distance backs the camera away to that standoff first and is refused with a list, because it " +
-                 "moves the camera; the tilt is computed from where " +
-                 "that leaves the camera. A target straight above or below it keeps the current heading and " +
-                 "tilts to the pole. Reports the yaw and pitch it wrote and the achieved aim, measured " +
-                 "against the scene camera's own view row rather than the matrix just written, so an object " +
-                 "above or below the camera is centred rather than reported as a miss. Needs a loaded cell " +
-                 "and CKPE with CKAgent.dll installed.")]
-    public CameraResult Aim(string reference, double? distance = null)
+                 "comma-joined list aimed in order from the same camera position. Optional distance backs the " +
+                 "camera away to that standoff first and is refused with a list, because it moves the camera; " +
+                 "the tilt comes from where that leaves it. level holds the horizon instead of centring: the " +
+                 "camera turns its heading onto the target and writes pitch 0, so aim is below 1 unless the " +
+                 "target is level with it, and yawAim is what reports the heading reached the target. A target " +
+                 "straight above or below keeps the current heading and tilts to the pole, or keeps the " +
+                 "horizon when level. Reports the yaw and pitch it wrote and the achieved aim, measured " +
+                 "against the scene camera's own view row rather than the matrix just written. Needs a " +
+                 "loaded cell and CKPE with CKAgent.dll installed.")]
+    public CameraResult Aim(string reference, double? distance = null, bool level = false)
     {
         if (string.IsNullOrWhiteSpace(reference))
         {
@@ -408,8 +408,10 @@ public sealed class CameraTools
                 "reference is required: a reference EditorID, a base object EditorID, or a form id", null);
         }
 
+        // Constraint: the plugin reads level as a word of its own after the standoff, so the order matters.
         string command = $"aim {reference.Trim()}";
         if (distance != null) command += " " + PluginClient.Format(distance.Value);
+        if (level) command += " level";
 
         if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
             return new CameraResult("error", code, message, null);

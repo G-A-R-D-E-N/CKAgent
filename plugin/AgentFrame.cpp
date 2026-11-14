@@ -604,7 +604,14 @@ namespace ckagent
 			return false;
 		}
 
-		const float distance = words.size() > 1 ? static_cast<float>(std::atof(words[1].c_str())) : 0.0f;
+		// Invariant: level is a word of its own, or a standoff asked for beside it would be read as its number.
+		bool holdHorizon = false;
+		float distance = 0.0f;
+		for (std::size_t i = 1; i < words.size(); ++i)
+		{
+			if (Lower(words[i]) == "level") holdHorizon = true;
+			else if (distance == 0.0f) distance = static_cast<float>(std::atof(words[i].c_str()));
+		}
 
 		// Constraint: a chain is one argument with commas, so the optional standoff keeps its own word.
 		std::vector<std::string> chain;
@@ -647,6 +654,7 @@ namespace ckagent
 		double pitchOut = 0.0;
 		double spanOut = 0.0;
 		double aimOut = 0.0;
+		double yawAimOut = 0.0;
 		double verticalOut = 0.0;
 		double targetOut[3] = { 0.0, 0.0, 0.0 };
 		NiPoint3 lastAfter{};
@@ -716,8 +724,10 @@ namespace ckagent
 			// Invariant: at the pole the yaw is whatever the heading was, and the pitch is the pole itself.
 			const float yaw = flatSpan > 1e-4 ? static_cast<float>(std::atan2(outY, outX))
 			                                 : static_cast<float>(std::atan2(headingY, headingX));
-			const float pitch = flatSpan > 1e-4 ? static_cast<float>(std::atan2(outZ, flatSpan))
-			                                   : (outZ > 0.0 ? 1.5707963f : -1.5707963f);
+			// Constraint: level holds the pitch at zero, which is what a shot that needs a horizon is asking for.
+			const float pitch = holdHorizon ? 0.0f
+				: (flatSpan > 1e-4 ? static_cast<float>(std::atan2(outZ, flatSpan))
+				                   : (outZ > 0.0 ? 1.5707963f : -1.5707963f));
 			SetViewPose(camera, px, py, before.z, yaw, pitch);
 
 			const NiPoint3 after = camera->GetPosition();
@@ -730,11 +740,26 @@ namespace ckagent
 			const double aim = AimAgainst(camera, after, targetPoint);
 			const double vertical = span > 1e-6 ? az / span : 0.0;
 
+			// Constraint: yawAim is measured against the heading chosen for this aim, not against the raw offset.
+			float view[3] = { 0.0f, 0.0f, 0.0f };
+			double yawAim = 0.0;
+			if (ReadSceneView(camera, view))
+			{
+				const double flatView = std::sqrt(static_cast<double>(view[0]) * view[0] +
+					static_cast<double>(view[1]) * view[1]);
+				if (flatView > 1e-4)
+				{
+					yawAim = (static_cast<double>(view[0]) * headingX +
+						static_cast<double>(view[1]) * headingY) / flatView;
+				}
+			}
+
 			char step[512];
 			std::snprintf(step, sizeof step,
-				"%s{\"reference\":\"%s\",\"formId\":\"%08X\",\"yaw\":%.4f,\"pitch\":%.4f,\"aim\":%.4f,\"aligned\":%s}",
-				steps.empty() ? "" : ",", hit.id.c_str(), hit.ref->GetFormID(), yaw, pitch, aim,
-				aim > 0.999 ? "true" : "false");
+				"%s{\"reference\":\"%s\",\"formId\":\"%08X\",\"yaw\":%.4f,\"pitch\":%.4f,\"aim\":%.4f,"
+				"\"yawAim\":%.4f,\"aligned\":%s}",
+				steps.empty() ? "" : ",", hit.id.c_str(), hit.ref->GetFormID(), yaw, pitch, aim, yawAim,
+				(holdHorizon ? yawAim : aim) > 0.999 ? "true" : "false");
 			steps += step;
 
 			lastReference = hit.id;
@@ -750,6 +775,7 @@ namespace ckagent
 			pitchOut = pitch;
 			spanOut = span;
 			aimOut = aim;
+			yawAimOut = yawAim;
 			verticalOut = vertical;
 		}
 
@@ -757,12 +783,13 @@ namespace ckagent
 		std::snprintf(buf, sizeof buf,
 			"{\"reference\":\"%s\",\"base\":\"%s\",\"formId\":\"%08X\",\"matches\":%d,"
 			"\"target\":[%.4f,%.4f,%.4f],\"camera\":[%.4f,%.4f,%.4f],\"distance\":%.2f,\"yaw\":%.4f,\"pitch\":%.4f,"
-			"\"span\":%.2f,\"aim\":%.4f,\"vertical\":%.4f,\"aligned\":%s,\"references\":%lu,\"steps\":%d,\"chain\":[%s]}",
+			"\"span\":%.2f,\"aim\":%.4f,\"yawAim\":%.4f,\"level\":%s,\"vertical\":%.4f,\"aligned\":%s,"
+			"\"references\":%lu,\"steps\":%d,\"chain\":[%s]}",
 			lastReference.c_str(), lastBase.c_str(), lastFormId, matches,
 			targetOut[0], targetOut[1], targetOut[2],
 			lastAfter.x, lastAfter.y, lastAfter.z,
-			distance, yawOut, pitchOut, spanOut, aimOut, verticalOut,
-			aimOut > 0.999 ? "true" : "false",
+			distance, yawOut, pitchOut, spanOut, aimOut, yawAimOut, holdHorizon ? "true" : "false", verticalOut,
+			(holdHorizon ? yawAimOut : aimOut) > 0.999 ? "true" : "false",
 			references, static_cast<int>(chain.size()), steps.c_str());
 		payload = buf;
 		return true;
