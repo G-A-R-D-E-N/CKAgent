@@ -161,11 +161,11 @@ namespace ckagent
 			camera->SetRotation(rotate);
 		}
 
-		// The forward row must be decoded from the node when it is readable, so the aim check is not circular.
+		// The view row must come from the scene camera, so a pose the editor rejected cannot pass as aimed.
 		double AimAgainst(CameraApi* camera, const NiPoint3& from, const NiPoint3& target)
 		{
 			float forward[3] = { 0.0f, 0.0f, 0.0f };
-			if (!ReadNodeForward(camera, forward)) return 0.0;
+			if (!ReadSceneView(camera, forward)) return 0.0;
 
 			const double dx = static_cast<double>(target.x) - from.x;
 			const double dy = static_cast<double>(target.y) - from.y;
@@ -320,7 +320,7 @@ namespace ckagent
 
 		const NiPoint3 after = camera->GetPosition();
 
-		// The aim must be measured from the node's forward row, because that is the row the editor looks along.
+		// The aim must be measured from the scene camera's view row, which is what the editor renders.
 		const double ax = static_cast<double>(targetPoint.x) - after.x;
 		const double ay = static_cast<double>(targetPoint.y) - after.y;
 		const double az = static_cast<double>(targetPoint.z) - after.z;

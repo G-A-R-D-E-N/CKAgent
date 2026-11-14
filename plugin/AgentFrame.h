@@ -20,8 +20,8 @@ namespace ckagent
 
 	ViewMatrix MakeViewMatrix(float yaw, float pitch);
 
-	// Verification requires the node's own forward row, not the matrix the tool has just written.
-	bool ReadNodeForward(void* camera, float out[3]);
+	// Constraint: verification must read the scene camera's view row, not the matrix the tool just wrote.
+	bool ReadSceneView(void* camera, float out[3]);
 
 	bool RunOrbitTool(const std::string& args, const FrameTarget& target, std::string& payload,
 		std::string& errorCode, std::string& errorMessage);

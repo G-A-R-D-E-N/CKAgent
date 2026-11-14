@@ -73,6 +73,38 @@ if ($failures.Count -eq 0) {
     }
 }
 
+# The aim check must be independent: it grades the scene camera's view row, not the rotation the tool just
+# wrote, otherwise a pose the editor rejected still reports aim 1.0.
+if (-not (Test-Path -LiteralPath $Frame -PathType Leaf)) {
+    $failures.Add("frame source not found: $Frame")
+} else {
+    $frameText = Get-Content -LiteralPath $Frame -Raw
+    $view = [regex]::Match($pluginText, 'bool ReadSceneView\([\s\S]*?\r?\n\t\}')
+
+    $observed['sceneView'] = if ($view.Success) { 'found' } else { 'missing' }
+
+    if (-not $view.Success) {
+        $failures.Add("$Plugin has no ReadSceneView, so the aim check has nothing independent to read")
+    } else {
+        if ($view.Value -notmatch 'AnchoredNiCamera\(') {
+            $failures.Add('ReadSceneView does not resolve through AnchoredNiCamera, so it may decode a different object')
+        }
+        if ($view.Value -notmatch 'out\[0\] = rotate\[0\]') {
+            $failures.Add('ReadSceneView does not read row 0, which is the view row the scene camera renders')
+        }
+        if ($view.Value -match 'kNiRowStride \+ 0') {
+            $failures.Add('ReadSceneView still reads the node row through the stride, so the check grades the matrix it wrote')
+        }
+    }
+
+    if ($frameText -notmatch 'ReadSceneView\(camera') {
+        $failures.Add("$Frame does not verify the aim through ReadSceneView")
+    }
+    if ($frameText -match 'm_pEntry\[0\]\[0\] \* ') {
+        $failures.Add("$Frame still dots the aim against the matrix it just wrote")
+    }
+}
+
 # The orbit must stay a circle: it takes the editor's own pivot and derives the camera from it at the radius
 # asked for. A drift here still produces a camera pose, just one that no longer circles the target.
 if (-not (Test-Path -LiteralPath $Frame -PathType Leaf)) {
@@ -121,6 +153,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output 'PASS camera layout matches the measured offsets and row stride, and the orbit keeps its pivot'
+Write-Output 'PASS camera layout, scene-camera aim check and orbit pivot all match what was measured'
 Write-Output $evidenceJson
 exit 0

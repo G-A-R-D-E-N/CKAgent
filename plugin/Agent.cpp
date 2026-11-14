@@ -345,11 +345,11 @@ namespace ckagent
 			return true;
 		}
 
-		// A lookat must be judged on the node's forward row, because that row is the one the editor renders along.
+		// A lookat must be judged on the scene camera's view row, because that is the one the editor renders.
 		bool AimsAt(void* camera, const NiPoint3& from, float tx, float ty, float tz)
 		{
 			float forward[3] = { 0.0f, 0.0f, 0.0f };
-			if (!ReadNodeForward(camera, forward)) return false;
+			if (!ReadSceneView(camera, forward)) return false;
 
 			const double dx = static_cast<double>(tx) - from.x;
 			const double dy = static_cast<double>(ty) - from.y;
@@ -461,7 +461,7 @@ namespace ckagent
 
 			// The forward row and the achieved aim must be reported, so a lookat that missed cannot look like one that hit.
 			float forwardRow[3] = { 0.0f, 0.0f, 0.0f };
-			const bool haveForward = ReadNodeForward(reinterpret_cast<void*>(g_camera), forwardRow);
+			const bool haveForward = ReadSceneView(reinterpret_cast<void*>(g_camera), forwardRow);
 			double lookatAim = 0.0;
 			if (haveForward && looking)
 			{
@@ -911,20 +911,20 @@ namespace ckagent
 		}
 	}
 
-	// The forward row must be read from the node itself, so a verification cannot pass on the tool's own write.
-	bool ReadNodeForward(void* cameraPointer, float out[3])
+	// Offset arithmetic must use the scene camera, because the editor copies the node into it every frame.
+	bool ReadSceneView(void* cameraPointer, float out[3])
 	{
-		auto* camera = reinterpret_cast<CameraApi*>(cameraPointer);
-		auto* node = camera ? camera->GetNode() : nullptr;
-		if (!node) return false;
+		std::string reason;
+		const auto scene = AnchoredNiCamera(reinterpret_cast<std::uint64_t>(cameraPointer), reason);
+		if (!scene) return false;
 
-		// Offset arithmetic must go through the node's own world rotation, because the camera object stores a local pose.
-		const auto* rotate = reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraWorld);
+		// Constraint: row 0 of the scene camera is the view it renders, which is the node's row 1.
+		const auto* rotate = reinterpret_cast<const float*>(scene + kNiCameraWorld);
 		if (!IsReadable(rotate, kNiCameraReadable)) return false;
 
-		out[0] = rotate[kNiRowStride + 0];
-		out[1] = rotate[kNiRowStride + 1];
-		out[2] = rotate[kNiRowStride + 2];
+		out[0] = rotate[0];
+		out[1] = rotate[1];
+		out[2] = rotate[2];
 		return true;
 	}
 

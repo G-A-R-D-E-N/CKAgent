@@ -114,7 +114,8 @@ Everything above was measured against a live editor, not read off the SDK:
 - Camera offsets are identical inside and outside: same camera object, same `+0xC0`, same row-shifted
   scene rotation, yaw 0 → view row `+X`, yaw 90° → `+Y`, at 22 528 / −43 008 world units as well as at
   interior scale. The view row is row 1 of the camera node's matrix (row 0 of the scene camera's), which
-  the probe confirms independently of what the tool writes.
+  the probe confirms independently of what the tool writes — and the aim every tool reports is graded on
+  the scene camera, not on the matrix it just wrote.
 - `ck.frame` on `Loot_Prewar_Safe` reports `aim 1.0000`; `ck.aim` does the same from 400 units above the
   object, writing a pitch of −1.0015 rad and a view row of `(0.5391, 0, −0.8423)`, the direction to it.
 - `lookat` at `(1000, 2000, 3000)` from `(39, 9492, 272)` lands the view on `(0.1197, −0.9329, 0.3397)`,

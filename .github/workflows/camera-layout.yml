@@ -49,6 +49,16 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the layout test accepted an orbit placing the camera on the far side of the pivot' }
           $global:LASTEXITCODE = 0
 
+      - name: An aim check that grades its own write is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/Agent.cpp -Raw) -replace 'out\[0\] = rotate\[0\]', 'out[0] = rotate[kNiRowStride + 0]' |
+            Set-Content drift/Agent.cpp
+          ./tools/camera-layout.test.ps1 -Plugin drift/Agent.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the layout test accepted an aim check reading the node row it wrote' }
+          $global:LASTEXITCODE = 0
+
       - name: Keep the evidence
         uses: actions/upload-artifact@v4
         with:

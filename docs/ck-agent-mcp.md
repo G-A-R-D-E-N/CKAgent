@@ -475,10 +475,11 @@ With `AndrewStation01` loaded (3616 references), on `Loot_Prewar_Safe` (`0023F20
 | `frame Loot_Prewar_Safe` (256, yaw 0) | `-216.4394, 9492.1836, 272.3472` | 256.00 | 1.0000 |
 | `frame Loot_Prewar_Safe 512 1.5708` | `39.5606, 8980.1836, 272.3472` | 512.00 | 1.0000 |
 
-The `aim` the tool reports is checked against a second path: the forward row is read back from the scene
-node rather than from the matrix the tool just wrote, and after the yaw-90° frame it is `(0, 1, 0)` while
-the unit direction to the object is `(0, 1, 0)` — dot `1.000000`. That ties the written pose to the matrix
-the editor actually holds, which a self-consistent readback would not.
+The `aim` the tool reports is not graded on the matrix it just wrote. It is read from the **scene camera**
+— the `NiCamera` at `camera+0x10`, which the editor copies the node into every frame and which is what
+actually renders — so the number means the editor took the pose. After the yaw-90° frame that row is
+`(0, 1, 0)` while the unit direction to the object is `(0, 1, 0)`, dot `1.000000`; the memory probe reads
+the same row from outside the process and agrees.
 
 An unmatched name comes back with candidates from the loaded cell (`no reference in the loaded cell
 matches X among 3616 references; for example: Loot_Prewar_Safe, MS07cCompanionMarker, ...`), because a
@@ -536,7 +537,8 @@ Basis, as measured on 1.11.246.0:
   6.4472 at a diagonal one. The shift is the invariant.
 - The view direction is **row 0 of `S`**, which is **row 1 of `R`**. `LookAt` at `+X`, `+Y` and `+Z`
   each put the target direction in that row and nowhere else, and the probe confirms it, so the forward
-  axis is measured, not assumed.
+  axis is measured, not assumed. Every aim the tools report is graded on row 0 of `S`, because `R` is the
+  matrix they wrote themselves.
 - `+yaw` is the direction the camera looks, as an angle in the world `XY` plane: yaw 0 → view `+X`,
   yaw 90° → view `+Y`, both confirmed through the probe's rows.
 - `+pitch` tilts the view up inside the forward row: yaw 0 with pitch 0.5 rad → view
