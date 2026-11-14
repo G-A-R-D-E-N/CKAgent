@@ -276,10 +276,12 @@ public sealed class CameraTools
      Description("Load a cell and put the camera in front of an object, so a reference can be inspected " +
                  "without navigating by hand. cell is an EditorID or display name (skipped when omitted, so " +
                  "an already loaded cell is used); reference matches a reference EditorID, its base object " +
-                 "EditorID, or an 8-digit form id; distance defaults to 256 and yaw picks which side to " +
-                 "stand on. Returns the matched object, its position, the camera pose and whether the object " +
-                 "sits ahead along the view row, plus the cell the render window actually holds, so a load " +
-                 "that landed elsewhere is visible in the same reply. Needs a loaded cell and CKPE with " +
+                 "EditorID, or an 8-digit form id; distance is chosen from the reference's own bounds (2.4 " +
+                 "bounding-sphere radii back, 30 degrees above the box centre) and may be overridden, and yaw " +
+                 "picks which side to stand on. Returns the matched object, its position, the bounds it was " +
+                 "framed from and whether they came from the reference, the camera pose and whether the " +
+                 "object sits ahead along the view row, plus the cell the render window actually holds, so a " +
+                 "load that landed elsewhere is visible in the same reply. Needs a loaded cell and CKPE with " +
                  "CKAgent.dll installed.")]
     public CameraResult Frame(string reference, string? cell = null, double? distance = null, double? yaw = null)
     {
@@ -313,8 +315,8 @@ public sealed class CameraTools
 
         }
 
-        // A yaw without a distance must still frame at the default standoff rather than at zero.
-        if (yaw != null && distance == null) distance = 256;
+        // Constraint: a yaw needs the distance word in front of it, and 0 is how it asks for the bounds fit.
+        if (yaw != null && distance == null) distance = 0;
 
         string command = $"frame {reference.Trim()}";
         if (distance != null) command += " " + PluginClient.Format(distance.Value);

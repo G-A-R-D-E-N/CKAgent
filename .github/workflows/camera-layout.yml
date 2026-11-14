@@ -99,6 +99,26 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the test accepted a probe that no longer asserts gridY or hasWorldSpace' }
           $global:LASTEXITCODE = 0
 
+      - name: Framing that ignores the object's bounds is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentFrame.cpp -Raw) -replace 'hit\.ref->GetBoundMin\(\)', 'NiPoint3{}' -replace 'hit\.ref->GetBoundMax\(\)', 'NiPoint3{}' |
+            Set-Content drift/AgentFrame.cpp
+          ./tools/camera-layout.test.ps1 -Frame drift/AgentFrame.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted framing that reads no bounds, so a bulb and a building get one standoff' }
+          $global:LASTEXITCODE = 0
+
+      - name: A fixed standoff is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentFrame.cpp -Raw) -replace 'requestedDistance > 0\.0f \? requestedDistance : kFrameFit \* radius', 'requestedDistance > 0.0f ? requestedDistance : 256.0f' |
+            Set-Content drift/AgentFrame.cpp
+          ./tools/camera-layout.test.ps1 -Frame drift/AgentFrame.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted the fixed 256 standoff that ignores the object size' }
+          $global:LASTEXITCODE = 0
+
       - name: A cross-check narrowed to one pose is rejected
         shell: pwsh
         run: |

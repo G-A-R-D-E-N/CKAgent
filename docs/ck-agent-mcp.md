@@ -381,7 +381,7 @@ matching the shape of `BGS/tools/mcp`. It needs no plugin to run:
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row index, optionally filtered — so a cell can be chosen by name instead of by index |
 | `ck.cell_load` | open a cell by EditorID or display name through the Cell View's own `NM_DBLCLK` handler; reports the row it matched and the cell the render window holds afterwards (`opened.editorId`, `opened.formId`), and returns `cell_not_loaded` naming the cell that stayed when the try changed nothing |
 | `ck.cell` | the cell the render window holds, by EditorID and form id, plus `interior`, `gridX`, `gridY` and `hasWorldSpace` — the same placement the plugin's `status` reports, read from the editor's own `TES` singleton, so a load is confirmed from the reply instead of inferred from a pointer. The grid only means anything when `interior` is false; an interior renderer reports `0, 0`. `tools/cell-probe.ps1` loads cells from the Cell View's own list and asserts the reply names each one, and fails if a fabricated pointer-only reply would pass |
-| `ck.frame` | load a cell and stand the camera in front of one of its references (`reference` = reference EditorID, base object EditorID or 8-digit form id; optional `cell`, `distance`, `yaw`), so an object is inspected without navigating by hand; reports the match, the target, the pose, whether the object sits ahead along the view row, and the cell the render window actually holds |
+| `ck.frame` | load a cell and stand the camera in front of one of its references (`reference` = reference EditorID, base object EditorID or 8-digit form id; optional `cell`, `distance`, `yaw`), so an object is inspected without navigating by hand; the standoff and the height are taken from the reference's own bounds (`2.4` bounding-sphere radii back, `30°` above the box centre), and an explicit `distance` overrides that; reports the match, the target, the box centre and the bounds it framed, whether those bounds came from the reference or a fallback, the pose, whether the object sits ahead along the view row, and the cell the render window actually holds |
 | `ck.status` (`blockedBy`) | names the hidden modal that has disabled the editor, so a blocked editor is not mistaken for a hung or idle one; every plugin tool reads it after a failure, dismisses that dialog with `ui.dismiss`, retries, and only reports it by name and handle if the block survives. The reply keeps the original failure code and only the message gains the block, saying whether the dialog was dismissed but the block persisted, or could not be dismissed at all. `tools/blocked-modal-probe.ps1` covers both outcomes against a live editor instead of by hand; the still-blocked one is forced with `CKAGENT_TEST_DISMISS_FAILS=1` because a dialog the server does handle is gone by the time the call returns |
 | `ck.ui` | passthrough to the in-process control tools (`ui.items`, `ui.select`, `ui.notify`, `ui.command`, `ui.click`, `ui.windows`, `ui.tree`, `ui.menu`): `method=ui.notify`, `args=0x16C1752 dblclk 2` |
 | `ck.resolve` | ask the plugin for one fresh resolution of both anchors and return the addresses, or the reason nothing validated — the refresh to call after loading a cell |
@@ -476,16 +476,30 @@ the target, not whatever the previous navigation left behind.
 
 `ck.frame` finds the object by iterating the loaded cell's own `TESObjectCELL::Items` (`GetItemCount`,
 `GetItems`, `TESObjectREFR::GetPosition`, `GetFormEditorID`, base object via `GetParent`), so nothing is
-assumed about where a reference sits. It then stands the camera at `target - distance * (cos yaw, sin yaw)`
-at the object's own height and writes the verified `SetPosition` + yaw matrix pair.
+assumed about where a reference sits.
 
-With `AndrewStation01` loaded (3616 references), on `Loot_Prewar_Safe` (`0023F200` at
-`39.5606, 9492.1836, 272.3472`):
+It then frames the reference from its own size rather than from a fixed standoff. `TESObjectREFR::GetBoundMin`
+and `GetBoundMax` give the box in the reference's own units, so the centre is the reference position plus the
+middle of the box, and the radius is half the box diagonal. The camera goes `2.4` radii back and `30°` up
+from that centre — `distance = 2.4 × radius`, `camera.z = center.z + distance/2` — so a bulb and a building
+each fill the view instead of sharing one standoff. A degenerate box (zero extent, or not finite) is floored
+at radius `8` and capped at `8192`; an explicit `distance` in the request still wins.
 
-| Request | Camera | Span | `aim` |
-|---|---|---|---|
-| `frame Loot_Prewar_Safe` (256, yaw 0) | `-216.4394, 9492.1836, 272.3472` | 256.00 | 1.0000 |
-| `frame Loot_Prewar_Safe 512 1.5708` | `39.5606, 8980.1836, 272.3472` | 512.00 | 1.0000 |
+With `DmndRadio01` loaded (142 references):
+
+| Request | Camera | `radius` | `distance` | `aim` |
+|---|---|---|---|---|
+| `frame Inst305Bulb05` | `1534.9611, -158.2818, 243.7863` | `25.98` | `62.35` | `1.0000` |
+| `frame Inst305Bulb05 0 1.5708` | `1588.9613, -212.2818, 243.7863` | `25.98` | `62.35` | `1.0000` |
+| `frame Inst305Bulb05 300` | `1329.1536, -158.2818, 362.6096` | `25.98` | `300.00` | `1.0000` |
+
+Three references in that cell framed at their own scale: `Inst305Bulb05` bounds `[-21, -15, -14, 9, 15, 16]`
+radius `25.98` distance `62.35`, `DefaultLightGreenFungus01NS` radius `20.15` distance `48.36`, and
+`MS14TrailerMarker` radius `27.37` distance `65.68` — the ratio held at `2.4` every time.
+
+Earlier measurements on `AndrewStation01` used the old fixed standoff and are still reproducible by passing
+it: `frame Loot_Prewar_Safe 256` reaches `-216.4394, 9492.1836, 272.3472`, and
+`frame Loot_Prewar_Safe 512 1.5708` reaches `39.5606, 8980.1836, 272.3472`, both `aim 1.0000`.
 
 The `aim` the tool reports is not graded on the matrix it just wrote. It is read from the **scene camera**
 — the `NiCamera` at `camera+0x10`, which the editor copies the node into every frame and which is what

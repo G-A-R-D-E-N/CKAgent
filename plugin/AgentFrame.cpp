@@ -217,12 +217,13 @@ namespace ckagent
 			return false;
 		}
 
-		const float distance = words.size() > 1 ? static_cast<float>(std::atof(words[1].c_str())) : 256.0f;
+		const float requestedDistance = words.size() > 1 ? static_cast<float>(std::atof(words[1].c_str())) : 0.0f;
 		const float yaw = words.size() > 2 ? static_cast<float>(std::atof(words[2].c_str())) : 0.0f;
-		if (!(distance > 1.0f))
+		// Constraint: a zero distance means "fit the bounds", so only a positive value below 1 is refused.
+		if (requestedDistance != 0.0f && !(requestedDistance > 1.0f))
 		{
 			errorCode = "bad_args";
-			errorMessage = "frame distance must be greater than 1";
+			errorMessage = "frame distance must be greater than 1, or 0 to fit the reference's bounds";
 			return false;
 		}
 
@@ -231,27 +232,66 @@ namespace ckagent
 			return false;
 
 		const NiPoint3 targetPoint = hit.ref->GetPosition();
-		SetViewPose(camera, targetPoint.x - distance * std::cos(yaw),
-			targetPoint.y - distance * std::sin(yaw), targetPoint.z, yaw, 0.0f);
+
+		// Invariant: bounds are in the reference's own units, so the box centre is its position plus the box middle.
+		constexpr float kFrameFit = 2.4f;           // standoff in bounding-sphere radii, so the box fits the view
+		constexpr float kFrameElevation = 0.5236f;  // 30 degrees above the target, so its top face is visible
+		constexpr float kMinRadius = 8.0f;          // a degenerate bound still frames instead of dividing to zero
+		constexpr float kMaxRadius = 8192.0f;       // larger than any interior cell, so a broken box cannot fly off
+
+		const NiPoint3 boundsMin = hit.ref->GetBoundMin();
+		const NiPoint3 boundsMax = hit.ref->GetBoundMax();
+		const float extentX = boundsMax.x - boundsMin.x;
+		const float extentY = boundsMax.y - boundsMin.y;
+		const float extentZ = boundsMax.z - boundsMin.z;
+		const bool haveBounds = std::isfinite(extentX) && std::isfinite(extentY) && std::isfinite(extentZ) &&
+			extentX > 0.0f && extentY > 0.0f && extentZ > 0.0f;
+
+		NiPoint3 center = targetPoint;
+		float radius = 0.0f;
+		const char* boundsSource = "fallback";
+		if (haveBounds)
+		{
+			center.x = targetPoint.x + (boundsMin.x + boundsMax.x) * 0.5f;
+			center.y = targetPoint.y + (boundsMin.y + boundsMax.y) * 0.5f;
+			center.z = targetPoint.z + (boundsMin.z + boundsMax.z) * 0.5f;
+			radius = 0.5f * std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ);
+			boundsSource = "reference";
+		}
+
+		if (!(radius > kMinRadius)) radius = kMinRadius;
+		if (radius > kMaxRadius) radius = kMaxRadius;
+
+		const float distance = requestedDistance > 0.0f ? requestedDistance : kFrameFit * radius;
+		const float pitch = -kFrameElevation;
+		const float cosPitch = std::cos(pitch);
+
+		SetViewPose(camera, center.x - distance * cosPitch * std::cos(yaw),
+			center.y - distance * cosPitch * std::sin(yaw),
+			center.z - distance * std::sin(pitch), yaw, pitch);
 
 		const NiPoint3 after = camera->GetPosition();
 
-		// Framing must be checked against the target, because the object has to sit ahead along the view row.
-		const double dx = static_cast<double>(targetPoint.x) - after.x;
-		const double dy = static_cast<double>(targetPoint.y) - after.y;
-		const double dz = static_cast<double>(targetPoint.z) - after.z;
+		// Framing must be checked against the box centre, because the object has to sit ahead along the view row.
+		const double dx = static_cast<double>(center.x) - after.x;
+		const double dy = static_cast<double>(center.y) - after.y;
+		const double dz = static_cast<double>(center.z) - after.z;
 		const double span = std::sqrt(dx * dx + dy * dy + dz * dz);
-		const double aim = AimAgainst(camera, after, targetPoint);
+		const double aim = AimAgainst(camera, after, center);
 
-		char buf[720];
+		char buf[980];
 		std::snprintf(buf, sizeof buf,
 			"{\"reference\":\"%s\",\"base\":\"%s\",\"formId\":\"%08X\",\"matches\":%d,"
-			"\"target\":[%.4f,%.4f,%.4f],\"camera\":[%.4f,%.4f,%.4f],\"distance\":%.2f,\"yaw\":%.4f,"
+			"\"target\":[%.4f,%.4f,%.4f],\"center\":[%.4f,%.4f,%.4f],\"camera\":[%.4f,%.4f,%.4f],"
+			"\"bounds\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"boundsSource\":\"%s\",\"radius\":%.2f,"
+			"\"distance\":%.2f,\"yaw\":%.4f,\"pitch\":%.4f,"
 			"\"span\":%.2f,\"aim\":%.4f,\"aligned\":%s,\"references\":%lu}",
 			hit.id.c_str(), hit.baseId.c_str(), hit.ref->GetFormID(), hit.matches,
 			targetPoint.x, targetPoint.y, targetPoint.z,
+			center.x, center.y, center.z,
 			after.x, after.y, after.z,
-			distance, yaw, span, aim,
+			boundsMin.x, boundsMin.y, boundsMin.z, boundsMax.x, boundsMax.y, boundsMax.z,
+			boundsSource, radius, distance, yaw, pitch, span, aim,
 			aim > 0.999 ? "true" : "false",
 			static_cast<unsigned long>(hit.count));
 		payload = buf;

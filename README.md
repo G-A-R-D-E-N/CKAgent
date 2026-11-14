@@ -68,7 +68,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | `ck.generate_previs` | start a headless `-GeneratePreVisData` job |
 | `ck.job_status` | job state, exit code, artifacts, captured `EditorWarnings.txt` |
 | `ck.job_log` | tail a job's console log |
-| `ck.frame` | load a cell and stand the camera in front of a named reference (`distance`, `yaw`); reports the cell it actually used |
+| `ck.frame` | load a cell and stand the camera in front of a named reference, sized from the reference's own bounds (`distance` overrides, `yaw` picks the side); reports the cell it actually used |
 | `ck.aim` | turn the camera onto a named reference without moving it; optional `distance` standoff |
 | `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat`, `orbit` a point at a distance and angle |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row |

@@ -149,6 +149,43 @@ if (-not (Test-Path -LiteralPath $Frame -PathType Leaf)) {
     }
 }
 
+# Regression: framing must come from the reference's bounds, or a bulb and a building share one standoff.
+if (Test-Path -LiteralPath $Frame -PathType Leaf) {
+    $frameText = Get-Content -LiteralPath $Frame -Raw
+    $run = [regex]::Match($frameText, 'bool RunFrameTool[\s\S]*?\r?\n\t\}')
+
+    $observed['frameTool'] = if ($run.Success) { 'found' } else { 'missing' }
+
+    if (-not $run.Success) {
+        $failures.Add("$Frame has no RunFrameTool, so ck.frame is missing or unreachable")
+    } else {
+        foreach ($expectation in @(
+                @('GetBoundMin\(\)', "the reference's minimum bound is not read, so the standoff cannot come from its size"),
+                @('GetBoundMax\(\)', "the reference's maximum bound is not read, so the extents are unknown"),
+                @('kFrameFit \* radius', 'the default standoff is not derived from the bounding-sphere radius'),
+                @('center\.z - distance \* std::sin\(pitch\)', 'the camera height is not derived from the box centre and the standoff'),
+                @('AimAgainst\(camera, after, center\)', 'the aim is graded against the reference position rather than the box centre it framed'),
+                @('kMinRadius', 'a degenerate bound has no floor, so a zero-radius object divides the standoff to zero'),
+                @('kMaxRadius', 'a broken bound has no ceiling, so a huge box throws the camera out of the cell'))) {
+            if ($run.Value -notmatch $expectation[0]) {
+                $failures.Add("RunFrameTool no longer matches /$($expectation[0])/: $($expectation[1])")
+            }
+        }
+
+        # The reply has to carry the measured size, or the caller cannot tell why the camera ended up there.
+        foreach ($key in 'radius', 'boundsSource', 'bounds', 'center') {
+            if (-not $run.Value.Contains('\"' + $key + '\"')) {
+                $failures.Add("the frame reply no longer emits '$key', so the framing cannot be audited from the reply")
+            }
+        }
+
+        # Constraint: the fixed standoff is what this replaced, and it still frames something plausible.
+        if ($run.Value -match ':\s*256\.0f') {
+            $failures.Add('RunFrameTool still falls back to a fixed 256 standoff, so the object size is ignored')
+        }
+    }
+}
+
 # Regression: the cell reply is a contract between three files - the plugin writes the keys, the server
 # parses them, and the probe asserts them - so a rename or a moved offset in one of them must fail here
 # instead of shipping a load that reports success without naming the cell it opened.
