@@ -262,6 +262,12 @@ the two need opposite editor states — the probe needs `File/Data` available, t
 probe closes a loaded cell and restores it, so the wrapper always runs the probe, makes sure a cell is
 loaded, then runs the sweep in one pass.
 
+The probe also covers the other half of that state — a dialog left on screen. It reveals the hidden dialog
+instead of hoping a foreground race goes its way, then asserts the refusal a command gets (`warning` /
+`editor_modal`), that the dialog was not pressed behind the operator's back, and that `ck.dismiss` clears it.
+That phase found a real bug: the MCP looked for a main window whose class is `Creation Kit`, while the frame's
+class is `Creation Kit Fallout 4 [v1.11.246.0]`, so every window-dependent tool reported `window_not_ready`.
+
 `tools/aim-probe.ps1` covers the aim contract the same way: it places the camera level, above, below and
 directly over one reference, calls `ck.aim` through the server, and asserts the camera did not move, the
 aim is 1.0, the tilt equals the angle between camera and target, and the view row re-read afterwards dots

@@ -737,38 +737,41 @@ public sealed class UiTools
     {
         string target = (hwnd ?? string.Empty).Trim();
         string title = string.Empty;
+        bool blocking = target.Length == 0;
+
+        if (!_plugin.TryCall("ui.modals", out string modals, out string modalsCode, out string modalsMessage))
+            return new UiResult("error", modalsCode, modalsMessage, null);
+
+        // Constraint: the modal list names the target and its title, so an explicit hwnd is reported the same way.
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(modals);
+            foreach (JsonElement modal in document.RootElement.EnumerateArray())
+            {
+                string handle = modal.TryGetProperty("hwnd", out JsonElement hwndText) ? hwndText.GetString() ?? string.Empty : string.Empty;
+                bool isBlocking = modal.TryGetProperty("blocking", out JsonElement flag) && flag.ValueKind == JsonValueKind.True;
+                bool wanted = blocking ? isBlocking : string.Equals(handle, target, StringComparison.OrdinalIgnoreCase);
+                if (!wanted)
+                    continue;
+
+                target = handle;
+                title = modal.TryGetProperty("title", out JsonElement named) ? named.GetString() ?? string.Empty : string.Empty;
+                break;
+            }
+        }
+        catch (JsonException)
+        {
+            return new UiResult("error", "bad_payload", "ui.modals did not return JSON", null);
+        }
 
         if (target.Length == 0)
-        {
-            if (!_plugin.TryCall("ui.modals", out string modals, out string modalsCode, out string modalsMessage))
-                return new UiResult("error", modalsCode, modalsMessage, null);
+            return new UiResult("ok", "nothing_blocked", "no dialog is blocking the editor", null);
 
-            try
-            {
-                using JsonDocument document = JsonDocument.Parse(modals);
-                foreach (JsonElement modal in document.RootElement.EnumerateArray())
-                {
-                    if (!modal.TryGetProperty("blocking", out JsonElement blocking) || blocking.ValueKind != JsonValueKind.True)
-                        continue;
-
-                    target = modal.TryGetProperty("hwnd", out JsonElement handle) ? handle.GetString() ?? string.Empty : string.Empty;
-                    title = modal.TryGetProperty("title", out JsonElement caption) ? caption.GetString() ?? string.Empty : string.Empty;
-                    break;
-                }
-            }
-            catch (JsonException)
-            {
-                return new UiResult("error", "bad_payload", "ui.modals did not return JSON", null);
-            }
-
-            if (target.Length == 0)
-                return new UiResult("ok", "nothing_blocked", "no dialog is blocking the editor", null);
-        }
 
         if (!_plugin.TryCall($"ui.dismiss {target}", out string dismissed, out string code, out string message))
             return new UiResult("error", code, message, null);
 
-        // Constraint: the press is only reported as a dismissal once the block is gone, not when the click was posted.
+        // Constraint: the press is only reported as a dismissal once the dialog is gone, not when the click was posted.
         bool cleared = false;
         string blockedBy = string.Empty;
         for (int attempt = 0; attempt < 12; ++attempt)
@@ -777,7 +780,7 @@ public sealed class UiTools
                 break;
 
             blockedBy = StatusString(status, "blockedBy");
-            if (blockedBy.Length == 0)
+            if (blockedBy.Length == 0 && ModalGone(target))
             {
                 cleared = true;
                 break;
@@ -796,6 +799,30 @@ public sealed class UiTools
             ? new UiResult("ok", "dismissed", $"dismissed '{title}' with {pressed}", report.ToJsonString())
             : new UiResult("ok", "still_blocked", $"pressed {pressed} but the editor is still blocked by '{blockedBy}'",
                 report.ToJsonString());
+    }
+
+    /// Constraint: a dialog on screen names no block, so the handle leaving the modal list is the only proof it went.
+    private bool ModalGone(string hwnd)
+    {
+        if (!_plugin.TryCall("ui.modals", out string modals, out _, out _))
+            return false;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(modals);
+            foreach (JsonElement modal in document.RootElement.EnumerateArray())
+            {
+                if (modal.TryGetProperty("hwnd", out JsonElement handle) && handle.ValueKind == JsonValueKind.String &&
+                    string.Equals(handle.GetString(), hwnd, StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static string StatusString(string json, string name)

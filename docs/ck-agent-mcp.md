@@ -372,7 +372,7 @@ matching the shape of `BGS/tools/mcp`. It needs no plugin to run:
 
 | Tool | Behaviour |
 |---|---|
-| `ck.status` | editor process, main window, installed build, manifest age, plugin pipe presence, and the blocking dialog's title, button captions and the caption its dismissal presses |
+| `ck.status` | editor process, main window (found by owning a menu bar — the frame's class carries the build, `Creation Kit Fallout 4 [v1.11.246.0]`, so a class match never fires), installed build, manifest age, plugin pipe presence, and the blocking dialog's title, button captions and the caption its dismissal presses |
 | `ck.commands` | capture the live menu tree into `<state>\commands.json`, or return the cache |
 | `ck.invoke_command` | resolve `File/Save`, `World/PreCombine Geometry For World` or an id, then `WM_COMMAND`; `dry_run` resolves only; refuses while a modal dialog has the window disabled |
 | `ck.save` | copy the plugin to `<state>\backups\<stamp>\`, post `File/Save`, then confirm the file changed — and report `save_not_observed` rather than claiming success |

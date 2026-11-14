@@ -121,6 +121,11 @@ function Find-Blocking {
     return Get-Modals | Where-Object { $_.blocking -eq $true } | Select-Object -First 1
 }
 
+function Find-ModalByHandle([string]$Handle) {
+    # Panels such as Object Window are #32770 too, so a dialog is looked up by its own handle, never by visibility.
+    return @(Get-Modals) | Where-Object { "$($_.hwnd)" -eq "$Handle" } | Select-Object -First 1
+}
+
 function Invoke-Mcp([string]$tool, [string]$json) {
     # The server logs to stderr, and PowerShell 5.1 turns a native child's stderr into an error record even
     # when it is redirected, so both streams go to files and only the JSON line comes back.
@@ -154,6 +159,41 @@ function Set-EditorBackground {
     if ($console -ne [IntPtr]::Zero) { [ModalWin]::SetForegroundWindow($console) | Out-Null }
     Start-Sleep -Milliseconds 700
     return [ModalWin]::GetForegroundWindow()
+}
+
+function Set-EditorForeground {
+    $frame = (Invoke-Plugin 'ui.frame') | ConvertFrom-Json
+    if (-not $frame.hwnd) { return $false }
+    $value = [Convert]::ToInt64(("$($frame.hwnd)" -replace '^0x', ''), 16)
+
+    # The dialog's visibility follows the foreground at creation, so that state is made, not hoped for.
+    for ($attempt = 0; $attempt -lt 6; $attempt++) {
+        [ModalWin]::SetForegroundWindow([IntPtr]$value) | Out-Null
+        Start-Sleep -Milliseconds 500
+        if ([ModalWin]::GetForegroundWindow() -eq [IntPtr]$value) { return $true }
+    }
+
+    return $false
+}
+
+function New-OnScreenModal([string]$Phase) {
+    # Creating the hidden dialog is the step that already works, so the on-screen state is reached from it by
+    # revealing that same handle: whether the CK shows its dialog depends on focus, which is a race.
+    $hidden = New-HiddenModal -Phase $Phase
+    if (-not $hidden) { return $null }
+
+    Invoke-Plugin "ui.modals reveal $($hidden.hwnd)" | Out-Null
+    Start-Sleep -Milliseconds 800
+
+    $shown = @(Get-Modals) | Where-Object { "$($_.hwnd)" -eq "$($hidden.hwnd)" } | Select-Object -First 1
+    if (-not $shown -or $shown.visible -ne $true) {
+        $observed["$Phase reveal"] = 'the dialog did not become visible when revealed'
+        if ($shown) { Close-Modal $shown | Out-Null }
+        return $null
+    }
+
+    $observed["$Phase"] = "dialog on screen hwnd=$($shown.hwnd) title='$($shown.title)' revealed from hidden"
+    return $shown
 }
 
 function Close-Modal($modal) {
@@ -271,6 +311,14 @@ if ($Command -match '^File/Data' -and $held.loaded) {
         Write-Output 'REPRODUCTION the render window still holds a cell after ui.cellclose'
         exit 2
     }
+}
+
+# The on-screen phase refuses a command, which needs one that resolves, so the manifest is captured while
+# nothing is blocking: capture walks the live menu and a dialog can keep it from being reachable.
+$manifest = Invoke-Mcp 'ck.commands' '{}'
+if ($manifest.status -ne 'ok') {
+    $captured = Invoke-Mcp 'ck.commands' '{"refresh":true}'
+    $observed['manifestCapture'] = [ordered]@{ status = $captured.status; code = $captured.code }
 }
 
 # 1. Create the dialog while the editor is in the background, and require it to be hidden.
@@ -466,6 +514,53 @@ if (-not $forDismiss) {
         $failures.Add('the editor is still blocked after ck.dismiss returned')
     }
     if (Find-Blocking) { Close-Modal $forDismiss | Out-Null }
+}
+
+# 8. A dialog already on screen disables the frame too, and the reply for that state is the refusal.
+$onScreen = New-OnScreenModal -Phase 'onscreen'
+if (-not $onScreen) {
+    $observed['onScreenPhase'] = 'the visible dialog was not reproduced'
+    $evidenceJson = [ordered]@{ modal = $observed; failures = @($failures); passed = $false } | ConvertTo-Json -Depth 6
+    if ($Evidence) { $evidenceJson | Set-Content -LiteralPath $Evidence -Encoding utf8 }
+    Write-Output "REPRODUCTION a dialog could not be left on screen for the editor: $($observed['onscreen attempt1'])"
+    exit 2
+}
+
+$observed['onScreenModal'] = [ordered]@{ hwnd = $onScreen.hwnd; title = $onScreen.title; visible = $onScreen.visible; blocking = $onScreen.blocking }
+
+# The visible dialog is not the hidden case, so status must not name a block it cannot see.
+$onScreenStatus = Get-Status
+$observed['onScreenBlockedBy'] = $onScreenStatus.blockedBy
+if ($onScreenStatus.blockedBy) {
+    $failures.Add("status named '$($onScreenStatus.blockedBy)' for a dialog that is on screen, so the two states are confused")
+}
+
+# The editor refuses a command while its window is disabled, which is the reply this state produces.
+$refusal = Invoke-Mcp 'ck.invoke_command' '{"command":"File/Save"}'
+$observed['onScreenReply'] = [ordered]@{ status = $refusal.status; code = $refusal.code; message = $refusal.message }
+if ($refusal.status -ne 'warning' -or $refusal.code -ne 'editor_modal') {
+    $failures.Add("a command posted at a dialog on screen was not refused ($($refusal.status)/$($refusal.code))")
+}
+
+# Nothing may be pressed behind the operator's back: the dialog has to still be there, on screen.
+$stillShown = Find-ModalByHandle $onScreen.hwnd
+$observed['onScreenAfterRefusal'] = if ($stillShown) { "visible at $($stillShown.hwnd)" } else { 'gone' }
+if (-not $stillShown) {
+    $failures.Add('a dialog on screen was dismissed by a refused command, so the operator lost the choice')
+} elseif ("$($stillShown.hwnd)" -ne "$($onScreen.hwnd)") {
+    $failures.Add("the dialog on screen changed from $($onScreen.hwnd) to $($stillShown.hwnd) after a refused command")
+}
+
+# And the tool for this state takes the handle, because nothing hidden is named for it to find.
+$byHandle = Invoke-Mcp 'ck.dismiss' ('{"hwnd":"' + $onScreen.hwnd + '"}')
+$observed['onScreenDismiss'] = [ordered]@{ status = $byHandle.status; code = $byHandle.code; message = $byHandle.message; payload = $byHandle.payload }
+if ($byHandle.status -ne 'ok' -or $byHandle.code -ne 'dismissed') {
+    $failures.Add("ck.dismiss did not clear the dialog on screen ($($byHandle.code) $($byHandle.message))")
+}
+
+if (Find-ModalByHandle $onScreen.hwnd) {
+    $failures.Add('the dialog on screen survived ck.dismiss, so the editor is left refusing commands')
+    Close-Modal $onScreen | Out-Null
 }
 
 # The cell this probe closed has to come back, or the rest of the session runs against an empty render window.
