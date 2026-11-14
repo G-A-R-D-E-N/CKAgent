@@ -420,13 +420,39 @@ Loading a cell needs no mouse: the plugin drives the editor's own controls on th
 | `ui.click <hwnd> <caption>` | press a dialog button by caption, which is how a command that opened a modal is dismissed |
 | `ui.dismiss <hwnd>` | press the button that abandons a dialog's pending work — `Cancel`, then `Close`, else `WM_CLOSE` — so a blocking modal clears without knowing its captions; OK is never pressed |
 | `ui.modals [reveal <hwnd>]` | list every dialog with its owner, visibility, enabled state and button captions, flagging as `blocking` the invisible one that owns a disabled window; `reveal` shows one |
-| `ui.cells [filter]` / `ui.cellload <name>` | name-addressed cell list, and open one |
+| `ui.cells [filter]` / `ui.cellload <name>` | name-addressed cell list, and open one; both read the collection the Cell View's combo has selected, so an exterior worldspace is only reachable after switching it |
 | `ui.cellclose` | free the cell the render window holds, at `BGSRenderWindow+0xF8`, which is the state `File/Data` checks before it opens; reports the pointer it cleared, and `closed:false` when nothing was held |
 | `ui.dataload <plugin>` | tick a master file in `File > Data` (two calls: the command, then the dialog) |
 
 Measured flow (editor 1.11.246.0, master `Fallout4.esm`): `ui.cellload AndrewStation01` opens
 Andrew Station, `cell` reports `loaded:true` with the cell pointer, and the camera then resolves where
 it previously refused with `camera_transform_unverified`.
+
+### Reaching an exterior worldspace by name, measured
+
+The Cell View lists one collection at a time: `Interiors`, `Recent Cells`, then one entry per worldspace.
+`ui.cellload` matches rows in that list and nothing else, so a cell in an exterior worldspace is
+unreachable by name until the combo is switched to that worldspace. The combo is the first `ComboBox`
+under the Cell View pane — `ui.tree <Cell View hwnd>` prints it with its items and its current selection
+(id `2083` in 1.11.246.0, `0x262A14` on the run these numbers come from, so read the pane's own tree
+rather than hard-coding the handle).
+
+| Step | Command | Reply |
+|---|---|---|
+| find the pane | `ui.windows`, the `#32770` titled `Cell View` | `0x4012E4` |
+| read the entries | `ui.tree 0x4012E4` | first `ComboBox`: `Interiors`, `Recent Cells`, `Commonwealth`, `DiamondCity`, `DiamondCityFX`, `Goodneighbor`, `SanctuaryHillsWorld`, `selected: 0`, id `2083` |
+| switch | `ui.select <combo> 3` | `{"selected":"3"}`; the cell list refills — 165 rows for `DiamondCity` against 324 for `Interiors` |
+| load by name | `ck.cell_load {"name":"DiamondCityOrigin"}` | `ok`, `ui.cellload DiamondCityOrigin -> opened DiamondCityOrigin` |
+| switch away | `ui.select <combo> 6` | list refills with `SanctuaryHillsWorld`'s cells |
+| same name again | `ck.cell_load {"name":"DiamondCityOrigin"}` | `no_cell`, `no cell view item matches: DiamondCityOrigin` |
+
+Two things that follow from this. Exterior cells share the editorId `Wilderness` — 100 of
+`DiamondCityFX`'s 101 cells do — so a name load cannot disambiguate them: read the list with
+`ui.items <list hwnd>` (its columns are `EditorID`, `FormID`, `Name`, `Loaded`, `Coords`, `Location`,
+`Owner`, `Last Combined`, and `Coords` is the cell's grid position) and open the row with
+`ui.notify <list hwnd> dblclk <row>`. And the combo is the only thing that decides what a name reaches:
+loading a cell does not switch it, and nothing in the reply says which worldspace a name was resolved
+against, so switch deliberately and check `ck.cell`'s `interior`/grid afterwards.
 
 ## Camera transform, measured (editor 1.11.246.0, cell open)
 
@@ -550,10 +576,9 @@ name the caller cannot discover is not a usable tool.
 ### Interior against a scaled worldspace, measured
 
 `DiamondCityFX` is a worldspace whose contents are scaled, so it is the case where a hidden scale factor
-would break the pose math. It cannot be reached by name — `ui.cellload` resolves whatever the Cell View is
-currently listing, so the worldspace combo has to be switched first (`ui.items <combo>`, then
-`ui.select <combo> 4`), and a cell row is then selected and double-clicked. Cell `00000FC4` ("Wilderness",
-grid `0, 0`) is the first one with content.
+would break the pose math. It is only reachable after the Cell View's combo is switched to it
+(`ui.select <combo> 4`, see *Reaching an exterior worldspace by name*), and a cell row is then selected
+and double-clicked. Cell `00000FC4` ("Wilderness", grid `0, 0`) is the first one with content.
 
 | | `AndrewStation01` (interior) | `DiamondCityFX` (exterior, grid `0, 0`) |
 |---|---|---|

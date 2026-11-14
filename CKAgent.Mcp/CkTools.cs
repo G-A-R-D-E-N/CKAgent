@@ -618,8 +618,11 @@ public sealed class CellTools
 
     [McpServerTool(Name = "ck.cells"),
      Description("List the cells in the editor's Cell View as EditorID, FormID, name and row index, " +
-                 "optionally filtered by EditorID or display name. Needs a loaded master file and the " +
-                 "CKAgent plugin installed.")]
+                 "optionally filtered by EditorID or display name. The Cell View shows one collection at " +
+                 "a time — Interiors, Recent Cells, or one worldspace — so an exterior worldspace is " +
+                 "listed only after its entry is selected: read the pane's first ComboBox with " +
+                 "method=ui.tree and set it with method=ui.select before listing or loading by name. " +
+                 "Needs a loaded master file and the CKAgent plugin installed.")]
     public CellResult Cells(string? filter = null)
     {
         string command = string.IsNullOrWhiteSpace(filter) ? "ui.cells" : $"ui.cells {filter!.Trim()}";
@@ -634,7 +637,11 @@ public sealed class CellTools
                  "it in the Cell View does, and report the cell the render window actually holds after the " +
                  "load, so a wrong-cell load is caught in the same reply: the opened EditorID and form id " +
                  "accompany the matched row, and cell_not_loaded names the cell that stayed when the try did " +
-                 "nothing. Refuses a name that cannot travel in one protocol line.")]
+                 "nothing. Resolves against the collection the Cell View's combo has selected, so a cell in " +
+                 "an exterior worldspace needs that entry selected first (ck.cells explains how) and fails " +
+                 "as no_cell without it; exterior cells share the name Wilderness, so those are opened by " +
+                 "row with method=ui.notify after reading the list with method=ui.items. Refuses a name that " +
+                 "cannot travel in one protocol line.")]
     public CellResult CellLoad(string name)
     {
         if (string.IsNullOrWhiteSpace(name))

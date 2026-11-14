@@ -73,7 +73,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | `ck.aim` | turn the camera onto a named reference without moving it; optional `distance` standoff |
 | `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat`, `orbit` a reference name or a world point at a distance and angle, `rotate` through the editor's own RotateBy, `lens` (field of view in degrees, near and far planes, measured zoom, or a zoom factor) |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row |
-| `ck.cell_load` | open a cell exactly as double-clicking it does, and report the cell the render window holds afterwards |
+| `ck.cell_load` | open a cell exactly as double-clicking it does, and report the cell the render window holds afterwards; only reaches cells of the collection the Cell View's worldspace combo is showing |
 | `ck.cell` | which cell the render window holds, as EditorID and form id, whether it is interior, and its grid coordinates, so a load is confirmed rather than assumed |
 | `ck.ui` | passthrough to the in-process control tools below |
 | `ck.resolve` | re-read the render window and camera once, for when anchors go stale after a load |
@@ -85,6 +85,12 @@ through `ck.ui`:
 
 `ui.frame`, `ui.windows`, `ui.tree`, `ui.items`, `ui.select`, `ui.notify`, `ui.command`, `ui.menu`,
 `ui.click`, `ui.modals`, `ui.cells`, `ui.cellload`, `ui.cellclose`, `ui.dataload`
+
+A cell by name only reaches what the Cell View is showing, and that is one collection at a time:
+`Interiors`, `Recent Cells`, or a single worldspace. For an exterior cell, switch the pane's worldspace
+combo first — `ui.tree` on the Cell View to find it, `ui.select <combo> <index>` to set it — and then
+`ck.cell_load {"name":"DiamondCityOrigin"}` opens it by name; switch away and the same name is `no_cell`
+again. `docs/ck-agent-mcp.md` records the run these numbers come from.
 
 ---
 
