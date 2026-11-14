@@ -4,3 +4,4 @@ obj/
 
 # packages.lock.json is committed on purpose: CI restores with --locked-mode so a
 # dependency change has to be explicit in review.
+.probe-tmp/

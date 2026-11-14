@@ -124,7 +124,8 @@ Everything above was measured against a live editor, not read off the SDK:
   π with pitch 0.4), measures 400.00 from the probe's own translation each time, and leaves `pivotRead`
   equal to the point with `hasPivot: true`, so the editor's own orbit and zoom now work around it.
 - A dialog created while the editor is not foreground stays invisible and disables the frame; CKAgent detects
-  it from `status`, reveals it, retries once, and names it if it still blocks.
+  it from `status`, reveals it, retries once, and names it if it still blocks. `tools/blocked-modal-probe.ps1`
+  recreates that state and asserts the whole sequence, so it is no longer a manual check.
 
 ---
 
@@ -219,3 +220,12 @@ being used to address columns, or when `mode=orbit` stops setting the editor's p
 a distance away from it. Three extra steps drift the offset, the stride and the orbit placement on purpose
 and fail if the test still passes, so the gate itself is checked. The test reads source text only — no
 editor, no plugin build, nothing to install, which is why it can run on a stock runner.
+
+`tools/blocked-modal-probe.ps1` covers the part that cannot run on a runner: it needs a live editor. It
+opens `File/Data` while the editor is in the background so the dialog is created hidden, asserts `status`
+names it, then makes a call that must fail (`ck.frame` with no cell loaded) and asserts the dialog stops
+being hidden and the editor is usable again — with a control call first that succeeds and must leave the
+dialog alone, so the change can only come from the reveal-and-retry path. The MCP step runs through
+`tools/mcp-call.mjs`, so the retry above the plugin pipe is what is exercised. Run it from the repository
+root with the editor running and no cell open; exit code 2 means the hidden state did not reproduce, not
+that the code failed, and the dialog is always dismissed with Cancel so the load order is untouched.
