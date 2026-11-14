@@ -127,23 +127,94 @@ Everything above was measured against a live editor, not read off the SDK:
 
 ---
 
-## Running it
+## Build it
 
-1. Install CKPE for CreationKit 1.11.246.0 and drop `CKAgent.dll` into `<game>\CKPEPlugins\`.
-2. Launch the editor through `ckpe_loader.exe`.
-3. Start the MCP server: `dotnet CKAgent.Mcp.dll`. Running `ckagent.exe` directly can fail with
-   `pipe_denied`: a process started from a sandboxed workspace directory inherits a low-integrity token,
-   and Windows refuses that token access to the medium-integrity pipe. `dotnet` itself runs at medium
-   integrity, so the DLL host always connects.
+You need Windows x64, Visual Studio 2022 with the C++ workload (the plugin is MSVC-only), CMake 3.25 or
+newer, .NET 8 SDK for the server, and a **built** CKPE checkout, because the plugin links CKPE's own
+libraries rather than re-deriving the editor's internals.
+
+### 1. The plugin, `CKAgent.dll`
+
+```powershell
+# from an "x64 Native Tools Command Prompt for VS 2022"
+git clone https://github.com/Perchik71/Creation-Kit-Platform-Extended ckpe
+# build CKPE x64 first, so that ckpe\x64\ holds CKPE.lib, CKPE.Common.lib and CKPE.PluginAPI.lib
+
+cmake -S CKAgent/plugin -B build/ckagent -G Ninja `
+      -DCKPE_ROOT=ckpe `
+      -DCKPE_PLUGIN_DIR="D:/SteamLibrary/steamapps/common/Fallout 4/CKPEPlugins"
+cmake --build build/ckagent --config Release
+```
+
+- `CKPE_ROOT` is the checkout; the three import libraries are read from `<CKPE_ROOT>/x64`.
+- `CKPE_PLUGIN_DIR` is optional. When set, the build copies the DLL into the game's `CKPEPlugins\` folder
+  as `CKAgent.dll`. Without it, take `build/ckagent/CKAgentPlugin.dll` and copy it there under that name.
+- Ninja is single-config, so the binary lands in `build/ckagent/`. A `-G "Visual Studio 17 2022" -A x64`
+  configure works too, and then the path carries `\Release\`.
+- Configure fails with an actionable message when `CKPE_ROOT` is unset, when an import library is missing,
+  or when the compiler is not MSVC — it never half-configures and fails later at link time.
+
+CKPE must be installed in the game folder for any of this to run; the server cannot provide it. The plugin
+loads at editor startup, so the DLL has to be in `CKPEPlugins\` before `ckpe_loader.exe` is launched. It
+serves `\\.\pipe\ckagent` and writes `CKAgent.log` beside CKPE's other plugin logs.
+
+### 2. The MCP server, `ckagent`
+
+.NET 8 only — the server builds and runs without the plugin, and reports `CKPEUnavailable` from tools that
+need it:
+
+```powershell
+dotnet build CKAgent/CKAgent.Mcp/CKAgent.Mcp.csproj -c Release
+dotnet CKAgent/CKAgent.Mcp/bin/Release/net8.0/ckagent.dll
+```
+
+For a folder to point a client at, publish instead:
+
+```powershell
+dotnet publish CKAgent/CKAgent.Mcp/CKAgent.Mcp.csproj -c Release -r win-x64 --self-contained false -o out/ckagent
+```
+
+### 3. Point an MCP client at it
+
+```json
+{
+  "mcpServers": {
+    "ckagent": {
+      "command": "dotnet",
+      "args": ["C:/path/to/CKAgent/CKAgent.Mcp/bin/Release/net8.0/ckagent.dll"]
+    }
+  }
+}
+```
+
+Start it through `dotnet`, not `ckagent.exe`, if you hit `pipe_denied`: a process started from a sandboxed
+workspace directory inherits a low-integrity token, and Windows refuses that token access to the
+medium-integrity pipe. `dotnet` runs at medium integrity, so the DLL host connects. This was measured on
+this host, not assumed — the same binary launched from a folder outside the sandbox connects fine.
 
 Working files — the command manifest, save backups, job logs — live in `%LOCALAPPDATA%\ckagent` and survive
 a server restart. A job left `running` is reported `interrupted` rather than silently forgotten.
+
+### 4. Launch the editor
+
+Start CreationKit through `ckpe_loader.exe` and give it a minute: the plugin answers on the pipe once the
+editor's main window is up. `ck.status` says whether it does.
+
+## Documentation
+
+`docs/ck-agent-mcp.md` is the full account — measured offsets and why each one sits where it does, the pipe
+protocol, the per-tool behaviour, and what was tried and rejected. Everything marked "measured" in it came
+from a live editor build, not from the SDK headers.
+
+`docs/ckpe-render-control.md` is the anchor table the plugin is pinned to: which CKPE header supplies each
+id, and where the corresponding class table, singleton and global sit in the 1.11.246.0 image.
 
 ## Checks
 
 `.github/workflows/camera-layout.yml` runs `tools/camera-layout.test.ps1` on every pull request. It fails
 when the plugin's hand-measured camera constants drift (world `0x70`, translate `world+0x30`, scale
-`world+0x3C`, row stride `4`), when the readable window stops covering the scale word, or when the stride
-stops being used to address columns. Two extra steps drift the offset and the stride on purpose and fail if
-the test still passes, so the gate itself is checked. The test reads source text only — no editor, no
-plugin build, nothing to install.
+`world+0x3C`, row stride `4`), when the readable window stops covering the scale word, when the stride stops
+being used to address columns, or when `mode=orbit` stops setting the editor's pivot and placing the camera
+a distance away from it. Three extra steps drift the offset, the stride and the orbit placement on purpose
+and fail if the test still passes, so the gate itself is checked. The test reads source text only — no
+editor, no plugin build, nothing to install, which is why it can run on a stock runner.
