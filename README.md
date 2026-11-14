@@ -272,9 +272,10 @@ with fewer fields. Exit 2 means the Cell View listed no named cell.
 
 `tools/camera-tool-cross-check.ps1` covers the row shift between the camera node and the scene camera. It
 sets 55 yaw/pitch poses and at every one recomputes `rotationOffset` from the node matrix and the documented
-shift, checks the view row is node row 1, checks that row carries the requested yaw and pitch, and checks
-the translation both nodes share. Worst errors over the sweep: offset `0.0002`, view row `0`, forward
-`0.000049`. A wrong shift is rejected too — it predicts `0` where the tool reports `6.5027` at a diagonal
+shift, compares `sceneRotate` (the slave's matrix, in the same reply as `rotate`) with the node's shifted
+rows, checks the view row is node row 1, checks that row carries the requested yaw and pitch, and checks
+the translation both nodes share. Worst errors over the sweep: offset `0.0002`, view row `0`, scene matrix
+`0`, forward `0.000049`. A wrong shift is rejected too — it predicts `0` where the tool reports `6.5027` at a diagonal
 pose, which is why the sweep matters and a single axis-aligned pose does not.
 
 A second phase covers the still-blocked reply. It starts the server with `CKAGENT_TEST_DISMISS_FAILS=1`, so

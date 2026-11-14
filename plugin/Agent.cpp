@@ -500,7 +500,8 @@ namespace ckagent
 				"{\"camera\":\"0x%llX\",\"sceneCamera\":\"0x%llX\","
 				"\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"wasX\":%.4f,\"wasY\":%.4f,\"wasZ\":%.4f,"
 				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"scale\":%.4f,"
-				"\"scene\":[%.4f,%.4f,%.4f],\"rotationOffset\":%.4f,\"positionSynced\":%s,"
+				"\"sceneRotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"scene\":[%.4f,%.4f,%.4f],"
+				"\"rotationOffset\":%.4f,\"positionSynced\":%s,"
 				"\"step\":[%.4f,%.4f,%.4f],\"moved\":%s,"
 				"\"forward\":[%.4f,%.4f,%.4f],\"aim\":%.4f,\"via\":\"%s\","
 				"\"window\":\"0x%llX\",\"resolvedAt\":\"%s\"}",
@@ -514,6 +515,7 @@ namespace ckagent
 				worldRotate ? worldRotate[kNiRowStride + 0] : 0.0f, worldRotate ? worldRotate[kNiRowStride + 1] : 0.0f, worldRotate ? worldRotate[kNiRowStride + 2] : 0.0f,
 				worldRotate ? worldRotate[kNiRowStride * 2 + 0] : 0.0f, worldRotate ? worldRotate[kNiRowStride * 2 + 1] : 0.0f, worldRotate ? worldRotate[kNiRowStride * 2 + 2] : 0.0f,
 				scale,
+				sceneRotate[0], sceneRotate[1], sceneRotate[2], sceneRotate[kNiRowStride + 0], sceneRotate[kNiRowStride + 1], sceneRotate[kNiRowStride + 2], sceneRotate[kNiRowStride * 2 + 0], sceneRotate[kNiRowStride * 2 + 1], sceneRotate[kNiRowStride * 2 + 2],
 				sceneTranslate[0], sceneTranslate[1], sceneTranslate[2], rotationDrift,
 				synced ? "true" : "false",
 				stepDelta[0], stepDelta[1], stepDelta[2],

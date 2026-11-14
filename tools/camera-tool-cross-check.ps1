@@ -51,7 +51,7 @@ $env:TEMP = $scratch
 $env:TMP = $scratch
 
 $failures = New-Object System.Collections.Generic.List[string]
-$observed = [ordered]@{ poses = @(); worstOffsetError = 0.0; worstViewDot = 1.0; worstViewError = 0.0; worstForwardError = 0.0 }
+$observed = [ordered]@{ poses = @(); worstOffsetError = 0.0; worstViewDot = 1.0; worstViewError = 0.0; worstSceneError = 0.0; worstForwardError = 0.0 }
 $invariant = [System.Globalization.CultureInfo]::InvariantCulture
 
 function Format-Number([double]$value) {
@@ -143,6 +143,23 @@ foreach ($yawValue in $YawDegrees) {
             $forwardError = [math]::Max($forwardError, [math]::Abs($forward[$i] - $expected[$i]))
         }
 
+        # Invariant: the reply carries the scene matrix too, so the shift is checked against the camera the probe reads, not only against the derived offset.
+        $sceneError = 0.0
+        if ($null -eq $pose.sceneRotate) {
+            $failures.Add("$label`: the reply has no sceneRotate, so the scene matrix cannot be compared with the shift")
+        } else {
+            $scene = @(
+                @([double]$pose.sceneRotate[0], [double]$pose.sceneRotate[1], [double]$pose.sceneRotate[2]),
+                @([double]$pose.sceneRotate[3], [double]$pose.sceneRotate[4], [double]$pose.sceneRotate[5]),
+                @([double]$pose.sceneRotate[6], [double]$pose.sceneRotate[7], [double]$pose.sceneRotate[8])
+            )
+            for ($i = 0; $i -lt 3; $i++) {
+                for ($j = 0; $j -lt 3; $j++) {
+                    $sceneError = [math]::Max($sceneError, [math]::Abs($scene[$i][$j] - $shifted[$i][$j]))
+                }
+            }
+        }
+
         $record = [ordered]@{
             yawDegrees = $yawValue
             pitch = $pitch
@@ -151,6 +168,7 @@ foreach ($yawValue in $YawDegrees) {
             offsetError = [math]::Round($offsetError, 6)
             viewDot = [math]::Round($viewDot, 5)
             viewError = [math]::Round($viewError, 6)
+            sceneError = [math]::Round($sceneError, 6)
             forwardError = [math]::Round($forwardError, 5)
             positionSynced = "$($pose.positionSynced)"
         }
@@ -164,6 +182,11 @@ foreach ($yawValue in $YawDegrees) {
         if ($offsetError -gt $Tolerance) {
             $failures.Add("$label`: the tool reports rotationOffset $reported but the row shift predicts $([math]::Round($predicted, 4))")
         }
+        if ($sceneError -gt $observed.worstSceneError) { $observed.worstSceneError = $sceneError }
+        if ($sceneError -gt 0.0004) {
+            $failures.Add("$label`: the scene matrix differs from the node's shifted rows by $([math]::Round($sceneError, 6))")
+        }
+
         if ($viewError -gt 0.0004) {
             $failures.Add("$label`: the view row differs from node row 1 by $([math]::Round($viewError, 6)), so it is not the shifted row")
         }
@@ -188,7 +211,8 @@ $count = @($observed.poses).Count
 $worstOffset = [math]::Round($observed.worstOffsetError, 6)
 $worstDot = [math]::Round($observed.worstViewDot, 6)
 $worstView = [math]::Round($observed.worstViewError, 6)
+$worstScene = [math]::Round($observed.worstSceneError, 6)
 $worstForward = [math]::Round($observed.worstForwardError, 6)
-Write-Output "PASS the row shift held at all $count orientations: scene row i is node row i+1, the view row is node row 1, and the reported rotationOffset matched the shift (worst offset error $worstOffset, worst view error $worstView, worst view dot $worstDot, worst forward error $worstForward)"
+Write-Output "PASS the row shift held at all $count orientations: scene row i is node row i+1, the view row is node row 1, and the reported rotationOffset matched the shift (worst offset error $worstOffset, worst view error $worstView, worst scene error $worstScene, worst view dot $worstDot, worst forward error $worstForward)"
 Write-Output $evidenceJson
 exit 0
