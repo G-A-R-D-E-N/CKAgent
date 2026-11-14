@@ -270,6 +270,13 @@ against three fabricated replies — pointer-only, a wrong EditorID, and a missi
 of them would pass, so a regression back to pointer-only reporting fails this probe rather than passing
 with fewer fields. Exit 2 means the Cell View listed no named cell.
 
+`tools/camera-tool-cross-check.ps1` covers the row shift between the camera node and the scene camera. It
+sets 55 yaw/pitch poses and at every one recomputes `rotationOffset` from the node matrix and the documented
+shift, checks the view row is node row 1, checks that row carries the requested yaw and pitch, and checks
+the translation both nodes share. Worst errors over the sweep: offset `0.0002`, view row `0`, forward
+`0.000049`. A wrong shift is rejected too — it predicts `0` where the tool reports `6.5027` at a diagonal
+pose, which is why the sweep matters and a single axis-aligned pose does not.
+
 A second phase covers the still-blocked reply. It starts the server with `CKAGENT_TEST_DISMISS_FAILS=1`, so
 the dismissal is skipped — the only way to reach that branch, because a dialog the server does handle is
 gone by the time the call returns. The reply must keep the original failure code, name the dialog, say it

@@ -581,11 +581,21 @@ reports `rotate` from the camera's own node — the matrix `MoveLocal` moves alo
 `NiCamera` at `camera+0x10`. Measured on 1.11.246.0, the slave's rows are the node's rows shifted by one
 (node `r1, r2, r0`), and the tool's `rotationOffset` is the sum of the differences that shift implies —
 6.0 at the axis-aligned poses first measured, 6.4472 at a diagonal one, so the shift is the invariant and
-the number is not. `tools/ck-surface-probe/camera-tool-cross-check.ps1` asserts that
-relation, the rotation offset the tool reports and the translation both nodes share, so a decode error in
-the plugin fails a
-check instead of passing as a plausible pose. It needs the editor and the plugin running, so it stays a
-local check rather than a CI one; `-Pose` replays a saved probe read instead of taking a new one.
+the number is not.
+
+`tools/camera-tool-cross-check.ps1` asserts that relation across a sweep rather than at one pose: 11 yaw
+values (0 through 315 degrees) against 5 pitches (-1.0 to 1.0 rad), 55 orientations in all. At each one it
+recomputes the offset from the node rows and the shift and compares it with the number the tool reports,
+checks the view row is node row 1, checks that row carries the requested yaw and pitch, and checks the
+translation both nodes share. Measured over the whole sweep: worst offset error `0.0002`, worst component
+difference between the view row and node row 1 `0`, worst forward error `0.000049`.
+
+The sweep is what makes the assertion meaningful. A shift that is wrong still predicts `6.0` at an
+axis-aligned pose, so a single pose proves little: with the shift removed the prediction collapses to `0`
+where the tool reports `6.5027`, and a comparison against row 0 differs by `1.3276`, both rejected. The
+rows print to four decimals, which is why the comparison is componentwise: the dot of `0.6205, 0.6205,
+0.4794` with itself is `0.99986`, not `1`, even though the two rows are identical. It needs the editor and
+the plugin running, so it stays a local check rather than a CI one.
 
 The CKAgent repo carries the plugin half of this check as `tools/camera-layout.test.ps1` and runs it from
 `.github/workflows/camera-layout.yml` on every pull request, including two steps that drift the offset and
