@@ -17,8 +17,9 @@ report and the pose are checked separately:
   3. the tilt is compared against the angle to the target computed here from the two positions, and the
      view row is re-read afterwards and dotted with that direction, so a pose the editor rejected cannot
      pass on the reply alone;
-  4. one case asks for a standoff, where the camera is expected to move to exactly that distance and the
-     tilt to be computed from the new position rather than the old one;
+  4. three cases ask for a standoff - from above the target, from below it, and level with it - where the
+     camera must move to exactly that distance, the tilt must come from the new position rather than the
+     old one, and its sign must follow which side the camera stands on;
   5. one case aims at two references in a single call, which must rotate in place for both, report each
      step's own tilt, finish on the last target, and refuse a standoff that would move the camera;
   6. last, ck.frame poses the camera as well as aims it, so its centring is checked the same way: the
@@ -251,15 +252,34 @@ foreach ($case in $cases) {
     $observed[$name] = $record
 }
 
-# 3. A standoff moves the camera, so the tilt must come from where it lands rather than from where it was.
+# 3. A standoff moves the camera, so the tilt must come from where it lands rather than from where it was, and
+# the tilt has a sign: from above it must point down, from below up, and level it must not tilt at all.
 $standoff = 256
-Invoke-Plugin ("camera set $(Format-Number ($target[0] + 300)) $(Format-Number ($target[1] - 200)) $(Format-Number ($target[2] + 200)) 0 0") | Out-Null
-$reply = Invoke-Mcp 'ck.aim' (@{ reference = $targetId; distance = $standoff } | ConvertTo-Json -Compress)
-$record = [ordered]@{ status = $reply.status; code = $reply.code }
+$standoffCases = @(
+    @{ name = 'standoff-from-above'; dx = 300.0; dy = -200.0; dz = 200.0;  sign = -1 },
+    @{ name = 'standoff-from-below'; dx = 300.0; dy = -200.0; dz = -200.0; sign = 1 },
+    @{ name = 'standoff-level';      dx = 300.0; dy = -200.0; dz = 0.0;    sign = 0 }
+)
 
-if ($reply.status -ne 'ok') {
-    $failures.Add("standoff: ck.aim refused ($($reply.code)): $($reply.message)")
-} else {
+foreach ($case in $standoffCases) {
+    $name = $case.name
+    $placed = "camera set $(Format-Number ($target[0] + $case.dx)) $(Format-Number ($target[1] + $case.dy)) $(Format-Number ($target[2] + $case.dz)) 0 0"
+    Invoke-Plugin $placed | Out-Null
+    $before = Get-Camera
+
+    $reply = Invoke-Mcp 'ck.aim' (@{ reference = $targetId; distance = $standoff } | ConvertTo-Json -Compress)
+    $record = [ordered]@{
+        placed = "$([math]::Round($before.x, 4)) $([math]::Round($before.y, 4)) $([math]::Round($before.z, 4))"
+        status = $reply.status
+        code   = $reply.code
+    }
+
+    if ($reply.status -ne 'ok') {
+        $failures.Add("$name`: ck.aim refused ($($reply.code)): $($reply.message)")
+        $observed[$name] = $record
+        continue
+    }
+
     $payload = $reply.payload | ConvertFrom-Json
     $record['aim'] = $payload.aim
     $record['pitch'] = $payload.pitch
@@ -270,20 +290,41 @@ if ($reply.status -ne 'ok') {
     $settled = [math]::Sqrt($hx * $hx + $hy * $hy)
     $record['horizontalDistance'] = [math]::Round($settled, 4)
     if ([math]::Abs($settled - $standoff) -gt 1.0) {
-        $failures.Add("standoff: the camera settled $([math]::Round($settled, 4)) away, not $standoff")
+        $failures.Add("$name`: the camera settled $([math]::Round($settled, 4)) away, not $standoff")
     }
     if ([math]::Abs([double]$payload.aim - 1.0) -gt $Tolerance) {
-        $failures.Add("standoff: aim is $($payload.aim), so the tilt came from somewhere other than the final position")
+        $failures.Add("$name`: aim is $($payload.aim), so the tilt came from somewhere other than the final position")
     }
 
+    # The standoff moves the camera sideways, so a tilt taken from the old distance would be visibly shallow here.
     $expectedPitch = [math]::Atan2($target[2] - [double]$payload.camera[2], $settled)
     $record['expectedPitch'] = [math]::Round($expectedPitch, 4)
     if ([math]::Abs([double]$payload.pitch - $expectedPitch) -gt 2e-3) {
-        $failures.Add("standoff: pitch is $($payload.pitch) but the settled camera-target angle is $([math]::Round($expectedPitch, 4))")
+        $failures.Add("$name`: pitch is $($payload.pitch) but the settled camera-target angle is $([math]::Round($expectedPitch, 4))")
     }
-}
 
-$observed['standoff'] = $record
+    # A tilt that is right in size but backwards points the camera at the sky, which aim 1.0 would not catch.
+    $tilt = [double]$payload.pitch
+    $wrongWay = ($case.sign -gt 0 -and $tilt -lt 0.01) -or ($case.sign -lt 0 -and $tilt -gt -0.01) -or
+        ($case.sign -eq 0 -and [math]::Abs($tilt) -gt 0.01)
+    if ($wrongWay) {
+        $failures.Add("$name`: pitch is $tilt but a camera $(if ($case.sign -gt 0) { 'below' } elseif ($case.sign -lt 0) { 'above' } else { 'level with' }) the target must tilt $(if ($case.sign -gt 0) { 'up' } elseif ($case.sign -lt 0) { 'down' } else { 'not at all' })")
+    }
+
+    # The reply is not the only witness: the view row is re-read and dotted with the target as well.
+    $after = Get-Camera
+    $dx = $target[0] - [double]$payload.camera[0]
+    $dy = $target[1] - [double]$payload.camera[1]
+    $dz = $target[2] - [double]$payload.camera[2]
+    $length = [math]::Sqrt($dx * $dx + $dy * $dy + $dz * $dz)
+    $dot = (([double]$after.forward[0] * $dx) + ([double]$after.forward[1] * $dy) + ([double]$after.forward[2] * $dz)) / $length
+    $record['forwardDot'] = [math]::Round($dot, 5)
+    if ($dot -lt 0.9999) {
+        $failures.Add("$name`: the view row dots the target at $([math]::Round($dot, 5)), so the object is off centre")
+    }
+
+    $observed[$name] = $record
+}
 
 # 4. A chain must rotate in place for every target and report each step, so aiming at only the first one fails.
 # The names come from the cell itself: ck.frame names candidates when a reference is not found.

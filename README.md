@@ -284,8 +284,10 @@ class is `Creation Kit Fallout 4 [v1.11.246.0]`, so every window-dependent tool 
 `tools/aim-probe.ps1` covers the aim contract the same way: it places the camera level, above, below and
 directly over one reference, calls `ck.aim` through the server, and asserts the camera did not move, the
 aim is 1.0, the tilt equals the angle between camera and target, and the view row re-read afterwards dots
-that direction. Another case asks for a standoff, where the camera must settle exactly that far away and
-the tilt must come from the new position, and a last one aims at two references in a single call, which
+that direction. Three cases ask for a standoff — from above the target, from below it and level with it —
+where the camera must settle exactly that far away, the tilt must come from the new position rather than the
+old one, and its sign must follow which side the camera stands on, since a tilt that is right in size but
+backwards still points at the sky. Another aims at two references in a single call, which
 must turn to each in order and finish on the last. A last case frames a reference with `ck.frame` and checks
 its centring the same way — `aim` `1`, `aligned`, the camera exactly the reported `distance` from the box
 centre, and the re-read view row dotting that centre — because framing reports an aim too, and it is the box
