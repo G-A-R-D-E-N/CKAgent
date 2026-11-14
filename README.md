@@ -73,7 +73,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat` |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row |
 | `ck.cell_load` | open a cell exactly as double-clicking it does |
-| `ck.cell` | which cell the render window holds, so a load is confirmed rather than assumed |
+| `ck.cell` | which cell the render window holds, as EditorID and form id, so a load is confirmed rather than assumed |
 | `ck.ui` | passthrough to the in-process control tools below |
 | `ck.resolve` | re-read the render window and camera once, for when anchors go stale after a load |
 

@@ -21,6 +21,7 @@
 #include <CKPE.PluginAPI.PluginAPI.h>
 #include <EditorAPI/B/BGSRenderWindowCamera.h>
 #include <EditorAPI/T/TES.h>
+#include <EditorAPI/T/TESObjectCELL.h>
 
 #include "Agent.h"
 #include "AgentEditorShared.h"
@@ -35,6 +36,7 @@ namespace ckagent
 	{
 		using TES = CKPE::Fallout4::EditorAPI::TES;
 		using CameraApi = CKPE::Fallout4::EditorAPI::BGSRenderWindowCamera;
+		using EditorCell = CKPE::Fallout4::EditorAPI::Forms::TESObjectCELL;
 		using NiPoint3 = CKPE::Fallout4::EditorAPI::NiPoint3;
 		using NiMatrix43 = CKPE::Fallout4::EditorAPI::NiMatrix43;
 
@@ -505,11 +507,31 @@ namespace ckagent
 			}
 
 			const auto cell = *reinterpret_cast<const std::uintptr_t*>(g_renderWindow + kCurrentCellOffset);
-			char buf[320];
-			std::snprintf(buf, sizeof buf, "{\"resolved\":true,\"window\":\"0x%llX\",\"cell\":\"0x%llX\",\"loaded\":%s}",
+
+			// A confirmed load must name the cell, because a pointer alone says nothing about which one it is.
+			std::string editorId, formId;
+			bool readable = false;
+			if (cell && IsReadable(reinterpret_cast<const void*>(cell), 0x180))
+			{
+				auto* loaded = reinterpret_cast<EditorCell*>(cell);
+				const char* id = loaded->GetFormEditorID();
+				editorId = id ? id : "";
+				char idbuf[16];
+				std::snprintf(idbuf, sizeof idbuf, "%08X", loaded->GetFormID());
+				formId = idbuf;
+				readable = true;
+			}
+
+			char buf[640];
+			std::snprintf(buf, sizeof buf,
+				"{\"resolved\":true,\"window\":\"0x%llX\",\"cell\":\"0x%llX\",\"loaded\":%s,\"readable\":%s,"
+				"\"editorId\":%s,\"formId\":%s}",
 				static_cast<unsigned long long>(g_renderWindow),
 				static_cast<unsigned long long>(cell),
-				cell ? "true" : "false");
+				cell ? "true" : "false",
+				readable ? "true" : "false",
+				editor::Quote(editorId).c_str(),
+				editor::Quote(formId).c_str());
 			return buf;
 		}
 

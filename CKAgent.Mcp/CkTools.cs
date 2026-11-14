@@ -507,7 +507,8 @@ public sealed class CellTools
 
     [McpServerTool(Name = "ck.cell"),
      Description("Report the cell the render window currently holds, so a load is confirmed rather than " +
-                 "assumed. Returns the render window pointer, the cell pointer and whether one is loaded.")]
+                 "assumed. Returns the cell's EditorID and form id alongside the render window and cell " +
+                 "pointers, plus readable=false when the load has not settled enough to read them.")]
     public CellResult Current()
     {
         if (!BlockedEditor.TryCall(_plugin, "cell", out string payload, out string code, out string message))
