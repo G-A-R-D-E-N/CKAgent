@@ -278,6 +278,11 @@ the translation both nodes share. Worst errors over the sweep: offset `0.0002`, 
 `0`, forward `0.000049`. A wrong shift is rejected too — it predicts `0` where the tool reports `6.5027` at a diagonal
 pose, which is why the sweep matters and a single axis-aligned pose does not.
 
+That probe is guarded against going stale by `tools/camera-layout.test.ps1`, which fails if a reply key it
+reads stops being emitted, if its sweep is narrowed or its tolerance widened, or if the docs name it under a
+path it does not live at. Passing `-Live` runs the sweep itself whenever the editor answers, and reports it
+skipped — not passed — when no editor or no loaded cell is there.
+
 A second phase covers the still-blocked reply. It starts the server with `CKAGENT_TEST_DISMISS_FAILS=1`, so
 the dismissal is skipped — the only way to reach that branch, because a dialog the server does handle is
 gone by the time the call returns. The reply must keep the original failure code, name the dialog, say it

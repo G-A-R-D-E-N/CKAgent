@@ -99,6 +99,36 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the test accepted a probe that no longer asserts gridY or hasWorldSpace' }
           $global:LASTEXITCODE = 0
 
+      - name: A cross-check narrowed to one pose is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content tools/camera-tool-cross-check.ps1 -Raw) -replace '\[double\[\]\]\$YawDegrees = @\(0, 30, 45, 60, 90, 120, 135, 180, 225, 270, 315\)', '[double[]]$YawDegrees = @(0)' |
+            Set-Content drift/cross.ps1
+          ./tools/camera-layout.test.ps1 -Cross drift/cross.ps1
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted a cross-check narrowed to one axis-aligned pose, where a wrong shift still predicts 6.0' }
+          $global:LASTEXITCODE = 0
+
+      - name: A cross-check with a widened tolerance is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content tools/camera-tool-cross-check.ps1 -Raw) -replace '0\.0004', '0.5' |
+            Set-Content drift/cross.ps1
+          ./tools/camera-layout.test.ps1 -Cross drift/cross.ps1
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted a cross-check whose tolerance absorbs a shift error' }
+          $global:LASTEXITCODE = 0
+
+      - name: A cross-check documented under the wrong path is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content docs/ck-agent-mcp.md -Raw) -replace 'tools/camera-tool-cross-check\.ps1', 'tools/ck-surface-probe/camera-tool-cross-check.ps1' |
+            Set-Content drift/doc.md
+          ./tools/camera-layout.test.ps1 -Docs drift/doc.md
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted docs naming the cross-check under a directory it is not in' }
+          $global:LASTEXITCODE = 0
+
       - name: Keep the evidence
         uses: actions/upload-artifact@v4
         with:

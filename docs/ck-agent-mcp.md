@@ -526,8 +526,9 @@ landscape), so nothing scaled was framed there — only the worldspace's own tra
 scale applied to geometry or at render time, rather than to the camera's parent, would not appear in any of
 these readings, and the rendered image was not inspected.
 
-Reproduce with `tools/ck-surface-probe/camera-tool-cross-check.ps1` in each world; it compares the tool's
-node matrix against the probe's memory read, so the numbers do not come from the plugin's own decode.
+Reproduce with `tools/camera-tool-cross-check.ps1` in each world; it reads the pose back through the tool
+and compares the node matrix with the scene camera's, so the numbers do not come from the plugin's own
+decode.
 
 ### Aiming up and down, measured
 
@@ -607,7 +608,7 @@ The CKAgent repo carries the plugin half of this check as `tools/camera-layout.t
 `.github/workflows/camera-layout.yml` on every pull request, including two steps that drift the offset and
 the stride on purpose and fail if the test still passes.
 
-`tools/ck-surface-probe/camera-layout.test.ps1` guards this layout. It holds the measured offsets as
+`tools/camera-layout.test.ps1` guards this layout. It holds the measured offsets as
 expected values and fails if the plugin's constants drift from them (world `0x70`, translate
 `world+0x30`, scale `world+0x3C`, stride 4), if the plugin stops addressing columns through the
 stride, or if the probe starts decoding a different row width. With `-Live` it also runs the probe

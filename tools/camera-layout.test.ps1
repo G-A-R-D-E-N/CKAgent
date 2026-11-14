@@ -9,7 +9,10 @@ param(
     [string]$Frame = 'plugin/AgentFrame.cpp',
     [string]$Server = 'CKAgent.Mcp/CkTools.cs',
     [string]$Probe = 'tools/cell-probe.ps1',
+    [string]$Cross = 'tools/camera-tool-cross-check.ps1',
+    [string[]]$Docs = @('README.md', 'docs/ck-agent-mcp.md'),
     [string]$Flow = 'plugin/AgentCellFlow.cpp',
+    [switch]$Live,
     [string]$Evidence = ''
 )
 
@@ -241,6 +244,110 @@ if ((Test-Path -LiteralPath $Plugin -PathType Leaf) -and (Test-Path -LiteralPath
     }
 }
 
+# Regression: the cross-check probe is the only check that grades the row shift against a live camera, and
+# it goes stale without anyone noticing - a reply key renamed under it, a sweep cut to one pose, a tolerance
+# widened to absorb an error, or a documented path that no longer exists. Each of those passes silently
+# until someone happens to run it with the editor up, so they are checked here instead.
+if (-not (Test-Path -LiteralPath $Cross -PathType Leaf)) {
+    $failures.Add("cross-check source not found: $Cross")
+} else {
+    $crossText = Get-Content -LiteralPath $Cross -Raw
+    $cameraPlugin = if (Test-Path -LiteralPath $Plugin -PathType Leaf) { Get-Content -LiteralPath $Plugin -Raw } else { '' }
+
+    $readKeys = @([regex]::Matches($crossText, '\$pose\.(\w+)') | ForEach-Object { $_.Groups[1].Value } | Select-Object -Unique)
+    $observed['crossCheckKeys'] = ($readKeys -join ',')
+
+    foreach ($key in 'rotate', 'sceneRotate', 'rotationOffset', 'forward', 'positionSynced') {
+        if ($readKeys -notcontains $key) {
+            $failures.Add("$Cross no longer reads `$pose.$key, so that part of the camera reply is unchecked")
+        }
+        if ($cameraPlugin -and -not $cameraPlugin.Contains('\"' + $key + '\"')) {
+            $failures.Add("$Plugin no longer emits '$key' in the camera reply, which $Cross reads")
+        }
+    }
+
+    # A narrowed sweep is how the check goes stale while still passing: one axis-aligned pose cannot tell
+    # the measured shift from the wrong mappings that predict the same 6.0 there.
+    foreach ($sweep in @(@('YawDegrees', 8, @('45', '135', '270')), @('PitchRadians', 3, @('-0.5', '0.5')))) {
+        # The parameter name is concatenated, because an escaped dollar inside an interpolated pattern is
+        # where this expression stops meaning what it reads as.
+        $pattern = '\[double\[\]\]\$' + $sweep[0] + '\s*=\s*@\(([^)]*)\)'
+        $match = [regex]::Match($crossText, $pattern)
+        if (-not $match.Success) {
+            $failures.Add("$Cross no longer declares the $($sweep[0]) sweep")
+            continue
+        }
+
+        $values = @($match.Groups[1].Value -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $observed[$sweep[0]] = ($values -join ',')
+
+        if ($values.Count -lt $sweep[1]) {
+            $failures.Add("the $($sweep[0]) sweep in $Cross covers $($values.Count) value(s), so it no longer separates a right mapping from a wrong one")
+        }
+        foreach ($required in $sweep[2]) {
+            if ($values -notcontains $required) {
+                $failures.Add("the $($sweep[0]) sweep in $Cross no longer covers $required, an angle where a wrong shift differs")
+            }
+        }
+    }
+
+    # The tolerances are the check: widened, they turn a real shift error into a pass.
+    foreach ($expectation in @(
+            @('0.0004', 'the per-row tolerances were widened, so a shift error larger than the printed precision passes'),
+            @('$Tolerance = 0.0025', 'the offset tolerance was widened, so a reported offset may drift from the shift'),
+            @('$shifted = @($rows[1], $rows[2], $rows[0])', 'the shift the probe asserts is no longer the measured one'),
+            @('$rows[1][$i] - $forward[$i]', 'the view row is no longer graded as node row 1'))) {
+        if (-not $crossText.Contains($expectation[0])) {
+            $failures.Add("$Cross no longer contains '$($expectation[0])': $($expectation[1])")
+        }
+    }
+
+    # Regression: a probe this repository ships must be documented under the path it actually has, or a
+    # reader in a checkout cannot run it. This is how the cross-check went stale - the docs named it under
+    # tools/ck-surface-probe/ while it lives in tools/. Probes from the monorepo outside this repository are
+    # not shipped here and are left alone.
+    $shipped = @(if (Test-Path -LiteralPath 'tools' -PathType Container) { Get-ChildItem -LiteralPath 'tools' -Filter '*.ps1' -File | ForEach-Object { $_.Name } })
+    $observed['shippedProbes'] = ($shipped -join ',')
+
+    foreach ($doc in $Docs) {
+        if (-not (Test-Path -LiteralPath $doc -PathType Leaf)) { continue }
+        $docText = Get-Content -LiteralPath $doc -Raw
+        foreach ($name in $shipped) {
+            # Invariant: the path class spans directory separators, or a documented subdirectory is skipped
+            # as if it matched nothing.
+            foreach ($mention in [regex]::Matches($docText, 'tools/[A-Za-z0-9._/-]*' + [regex]::Escape($name))) {
+                if ($mention.Value -ne "tools/$name") {
+                    $failures.Add("$doc names $($mention.Value), but $name lives at tools/$name")
+                }
+            }
+        }
+    }
+}
+
+# The live run is what the static guards protect: it needs the editor and a loaded cell, so without them it
+# reports skipped rather than passing, and a run that does happen must be the sweep itself.
+$liveRun = [ordered]@{ requested = [bool]$Live; outcome = 'not requested' }
+if ($Live -and $failures.Count -eq 0) {
+    $probeArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $Cross)
+    $liveEvidence = if ($Evidence) { [System.IO.Path]::ChangeExtension($Evidence, '.live.json') } else { '' }
+    if ($liveEvidence) { $probeArgs += @('-Evidence', $liveEvidence) }
+
+    $liveOutput = & powershell @probeArgs 2>&1
+    $liveCode = $LASTEXITCODE
+    $liveRun['exitCode'] = $liveCode
+
+    switch ($liveCode) {
+        0 { $liveRun['outcome'] = 'pass'; $liveRun['line'] = "$($liveOutput | Select-Object -Last 1)" }
+        2 { $liveRun['outcome'] = 'skipped: no cell loaded, so the camera has no usable transform' }
+        3 { $liveRun['outcome'] = 'skipped: plugin pipe unreachable, so the editor is not running with the plugin' }
+        default {
+            $liveRun['outcome'] = 'failed'
+            $failures.Add("the live cross-check failed: $((@($liveOutput) | Where-Object { "$_" -like 'FAIL*' }) -join '; ')")
+        }
+    }
+}
+$observed['live'] = $liveRun
+
 $evidenceJson = [ordered]@{ layout = $observed; failures = @($failures); passed = ($failures.Count -eq 0) } | ConvertTo-Json -Depth 6
 if ($Evidence) {
     $evidenceJson | Set-Content -LiteralPath $Evidence -Encoding utf8
@@ -251,6 +358,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output 'PASS camera layout, scene-camera aim check, orbit pivot and cell decode all match what was measured'
+Write-Output "PASS camera layout, scene-camera aim check, orbit pivot and cell decode all match what was measured; cross-check live run: $($liveRun['outcome'])"
 Write-Output $evidenceJson
 exit 0
