@@ -110,4 +110,21 @@ public sealed class StartupTests
         Assert.Equal("editor_not_running",
             EditorDiscovery.DescribeStatus(processFound: false, hasWindow: false, windowVisible: false).Code);
     }
+
+    // Constraint: a frame window must count as sight of the editor, which is all the low-integrity host ever gets.
+    [Fact]
+    public void TheSightFieldNamesTheEvidenceThatFoundTheEditor()
+    {
+        Assert.Equal("process", ClientView.SightOf(processFound: true, windowFound: true));
+        Assert.Equal("window", ClientView.SightOf(processFound: false, windowFound: true));
+        Assert.Equal("none", ClientView.SightOf(processFound: false, windowFound: false));
+    }
+
+    // Constraint: the token walk must yield a level and at least the notify privilege, or the reported fields are noise.
+    [Fact]
+    public void TheClientsOwnTokenIsReadable()
+    {
+        Assert.Contains(WindowsIntegrity.LevelName(), new[] { "low", "medium", "high", "system", "untrusted" });
+        Assert.Contains("SeChangeNotifyPrivilege", WindowsIntegrity.EnabledPrivileges());
+    }
 }

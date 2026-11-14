@@ -308,6 +308,19 @@ messages are blocked between integrity levels by UIPI, so menu and UI calls cann
 is the way in, and it does: the same low host returned `pluginPipeAvailable: true`, read `blockedBy` from the
 plugin, and answered `ck.cell` over the low-labelled pipe.
 
+Every reply says which evidence it rests on, and on whose behalf: `clientIntegrity` (`low`, `medium`, `high`,
+`system`, `untrusted`, from the label SID of this process's token), `clientElevated` (the token's own elevation
+flag), `clientPrivileges` (the enabled privileges only, sorted — a held-but-disabled privilege cannot open
+anything), and `seesEditorProcess` / `seesEditorWindow` / `editorSight` where the last is `process`, `window` or
+`none`. That is what separates "there is no editor" from "this client was never shown one": the same editor in the
+same session reads `editorSight: "process"` from a medium host and `editorSight: "window"` from a low one.
+
+Measured on this host, same editor at pid `37744`: the low apphost answered `clientIntegrity: low`,
+`clientElevated: false`, `clientPrivileges: ["SeChangeNotifyPrivilege"]`, `seesEditorProcess: false`,
+`seesEditorWindow: true`, `editorSight: window`; the medium host answered the same privileges with
+`clientIntegrity: medium` and `editorSight: process`. One enabled privilege is the whole list on both — this is not
+an elevated account, which is the other reason the process is not open to the low host.
+
 Tool naming, namespaced so it does not collide with the existing `fo4editor` server:
 
 | Tool | Surface | What it does |

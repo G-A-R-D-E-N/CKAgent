@@ -218,7 +218,9 @@ rather than silently forgotten.
 The same low-integrity apphost is handed no `CreationKit` process at all, so `ck.status` finds the editor by its
 frame window and answers `editor_invisible` with the real pid and title rather than `editor_not_running`. Window
 messages do not cross integrity levels, so in that mode every call goes over the plugin pipe — which works, and
-was measured from that host.
+was measured from that host. The reply also says what the client itself is working with: `clientIntegrity`,
+`clientElevated`, `clientPrivileges`, and `seesEditorProcess` / `seesEditorWindow` / `editorSight` naming the
+evidence behind the answer.
 
 ### 4. Launch the editor
 

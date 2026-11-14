@@ -57,20 +57,19 @@ public sealed class CkTools
                  "is blocking the editor it reports the dialog title, the captions of its buttons, and the " +
                  "caption the automatic dismissal will press, so a caller can see both what is available and " +
                  "what will happen. A window that exists but is hidden is reported as editor_invisible, not as a " +
-                 "missing editor, and stateDirectoryNote names a state folder used after the default was refused.")]
+                 "missing editor, and stateDirectoryNote names a state folder used after the default was refused. " +
+                 "The reply also states this client's own integrity level, elevation and enabled privileges, and " +
+                 "which evidence found the editor — its process, its frame window, or neither — because a host at " +
+                 "low integrity is handed no editor process at all.")]
     public EditorStatusResult Status()
     {
         var document = _commands.Load();
         var process = EditorDiscovery.FindEditor(_paths.CreationKitPath);
 
         // Constraint: a host handed no editor process still has the frame window, which proves the editor is up.
-        IntPtr frameOnly = IntPtr.Zero;
-        int frameOnlyPid = 0;
-        if (process == null)
-        {
-            frameOnly = EditorDiscovery.FindFrameWindow(out uint framePid);
-            frameOnlyPid = (int)framePid;
-        }
+        IntPtr frameOnly = EditorDiscovery.FindFrameWindow(out uint framePid);
+        int frameOnlyPid = (int)framePid;
+        var view = ClientView.Describe(process != null, frameOnly != IntPtr.Zero);
 
         if (process == null && frameOnly == IntPtr.Zero)
         {
@@ -79,7 +78,8 @@ public sealed class CkTools
                 false, null, null, null,
                 _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
                 document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-                false, _paths.StateDirectory, null, null, null, _paths.StateDirectoryNote);
+                false, _paths.StateDirectory, null, null, null, _paths.StateDirectoryNote,
+                view.Integrity, view.Elevated, view.Privileges, view.SeesProcess, view.SeesWindow, view.Sight);
         }
 
         IntPtr window = process != null
@@ -135,7 +135,8 @@ public sealed class CkTools
             window != IntPtr.Zero ? window.ToInt64() : null,
             _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
             document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-            pipe, _paths.StateDirectory, blockedBy, modalButtons, dismissBy, _paths.StateDirectoryNote);
+            pipe, _paths.StateDirectory, blockedBy, modalButtons, dismissBy, _paths.StateDirectoryNote,
+            view.Integrity, view.Elevated, view.Privileges, view.SeesProcess, view.SeesWindow, view.Sight);
     }
 
     [McpServerTool(Name = "ck.commands"),

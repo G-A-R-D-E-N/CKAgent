@@ -19,4 +19,10 @@ public sealed record EditorStatusResult(
     string? BlockedBy,
     IReadOnlyList<string>? ModalButtons,
     string? DismissBy,
-    string? StateDirectoryNote);
+    string? StateDirectoryNote,
+    string? ClientIntegrity,
+    bool ClientElevated,
+    IReadOnlyList<string> ClientPrivileges,
+    bool SeesEditorProcess,
+    bool SeesEditorWindow,
+    string EditorSight);
