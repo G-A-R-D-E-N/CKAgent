@@ -269,10 +269,11 @@ reloads the same cell at the end, including when it stops early. Exit code 2 mea
 reproduce, not that the code failed, and the dialog is always dismissed with Cancel so the load order is
 untouched.
 
-`tools/live-evidence.ps1` runs that probe and the camera sweep together and writes one evidence file, since
-the two need opposite editor states — the probe needs `File/Data` available, the sweep needs a cell. The
-probe closes a loaded cell and restores it, so the wrapper always runs the probe, makes sure a cell is
-loaded, then runs the sweep in one pass.
+`tools/live-evidence.ps1` is the release run: both live probes and the camera sweep in one pass, into one
+evidence file. They need opposite editor states — the blocked-modal probe needs `File/Data` available, the
+sweep and the aim probe need a cell — so the wrapper always runs the probe first, then makes sure a cell is
+loaded, then the sweep, then the aim probe, which loads its own cell and leaves it loaded. One command
+covers both probes, so a release cannot quietly run only the one that comes to mind first.
 
 The probe also covers the other half of that state — a dialog left on screen. It reveals the hidden dialog
 instead of hoping a foreground race goes its way, then asserts the refusal a command gets (`warning` /

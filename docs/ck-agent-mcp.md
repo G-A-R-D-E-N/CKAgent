@@ -711,11 +711,14 @@ checks the view row is node row 1, checks that row carries the requested yaw and
 translation both nodes share. Measured over the whole sweep: worst offset error `0.0002`, worst component
 difference between the view row and node row 1 `0`, worst forward error `0.000049`.
 
-`tools/live-evidence.ps1` runs both live checks in one pass and writes one file. They need opposite editor
-states — the modal probe opens `File/Data`, which the editor greys out while a cell is open, and the sweep
-needs a cell — and the probe closes a loaded cell itself (`ui.cellclose`, which clears
-`BGSRenderWindow+0xF8` and re-reads it) and reloads the same cell afterwards, so the wrapper always runs the
-probe, ensures a cell, then the sweep. Measured on `DmndRadio01` with the cell already open: the probe closed
+`tools/live-evidence.ps1` is the release run: both live probes and the sweep in one pass, one file. They
+need opposite editor states — the modal probe opens `File/Data`, which the editor greys out while a cell is
+open, and the sweep and the aim probe need a cell — and the probe closes a loaded cell itself (`ui.cellclose`,
+which clears `BGSRenderWindow+0xF8` and re-reads it) and reloads the same cell afterwards, so the wrapper
+always runs the probe, ensures a cell, then the sweep, then the aim probe (`-AimCell`, `-AimReference`,
+defaults `AndrewStation01` / `Loot_Prewar_Safe`), which loads its own cell through `ck.frame` and leaves it
+loaded. Running both probes from one command is the point: a release that runs only the probe someone
+remembers is the failure mode this closes. Measured on `DmndRadio01` with the cell already open: the probe closed
 it (`was 0x1E3D5A1D330`, `loadedAfterClose false`), found and dismissed the hidden `Data` dialog, restored the
 cell (`status ok`), and the run reported `blockedModal: pass`, `cellLoad: exit 0`, `cameraCrossCheck: pass`,
 exit `0` into one file. The close is checked rather than assumed: a write that does not reach the render

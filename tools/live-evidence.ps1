@@ -1,13 +1,15 @@
 <#
 .SYNOPSIS
-Runs the blocked-modal probe and the camera cross-check in one pass, into one evidence file.
+Runs every live check in one pass — both probes and the camera cross-check — into one evidence file.
 
 .DESCRIPTION
-The two checks need opposite editor states. The probe opens `File/Data`, which the editor greys out while a
-cell is open, and the cross-check reads the camera transform, which needs one. The probe closes a loaded cell
-itself and puts it back, so the order is always the same: probe, make sure a cell is loaded, then the
-cross-check. A cell already open is reloaded by the probe's own restore, which is why the load step reports
-`already loaded` rather than loading it twice.
+The checks need opposite editor states. The blocked-modal probe opens `File/Data`, which the editor greys out
+while a cell is open, and the cross-check and the aim probe both need one. The probe closes a loaded cell
+itself and puts it back, so the order is always the same: probe, make sure a cell is loaded, the cross-check,
+then the aim probe, which loads its own cell through `ck.frame`. A cell already open is reloaded by the
+probe's own restore, which is why the load step reports `already loaded` rather than loading it twice.
+
+This is the release run: one command covers both live probes, so neither can be remembered and skipped.
 
 Both scripts write their own JSON when given `-Evidence`, so the wrapper points each at a temporary file and
 embeds the parsed result, which is what makes one file enough. The child output is kept for the failed step,
@@ -25,6 +27,12 @@ Fallout 4 directory the MCP server should talk to.
 .PARAMETER Cell
 Cell to load for the cross-check once the probe has finished.
 
+.PARAMETER AimCell
+Cell the aim probe loads for its run, and leaves loaded at the end.
+
+.PARAMETER AimReference
+Reference the aim probe turns the camera onto; it must exist in `-AimCell`.
+
 .PARAMETER Evidence
 Path of the single JSON file this writes.
 
@@ -36,6 +44,8 @@ param(
     [string]$Dll = 'CKAgent.Mcp/bin/Release/net8.0/ckagent.dll',
     [string]$Game = 'D:\SteamLibrary\steamapps\common\Fallout 4',
     [string]$Cell = 'DmndRadio01',
+    [string]$AimCell = 'AndrewStation01',
+    [string]$AimReference = 'Loot_Prewar_Safe',
     [string]$Evidence = 'live-evidence.json'
 )
 
@@ -43,6 +53,7 @@ $ErrorActionPreference = 'Stop'
 
 $probeScript = Join-Path $PSScriptRoot 'blocked-modal-probe.ps1'
 $crossScript = Join-Path $PSScriptRoot 'camera-tool-cross-check.ps1'
+$aimScript = Join-Path $PSScriptRoot 'aim-probe.ps1'
 $scratch = Join-Path $PSScriptRoot '.live-evidence-tmp'
 New-Item -ItemType Directory -Force $scratch | Out-Null
 
@@ -53,7 +64,7 @@ $incomplete = $false
 function Invoke-Plugin([string]$command) {
     $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'ckagent', [System.IO.Pipes.PipeDirection]::InOut)
     try {
-        $pipe.Connect(5000)
+        $pipe.Connect(30000)
     } catch {
         throw "the plugin pipe is unreachable: $($_.Exception.Message)"
     }
@@ -78,11 +89,11 @@ function Get-Status {
 }
 
 # A child check must not take the wrapper down with it: its exit code is the result, not an exception.
-function Invoke-Check([string]$name, [string]$script, [string]$evidencePath) {
+function Invoke-Check([string]$name, [string]$script, [string]$evidencePath, [string[]]$extra = @()) {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Evidence $evidencePath 2>&1
+        $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $script -Evidence $evidencePath @extra 2>&1
     } finally {
         $ErrorActionPreference = $previous
     }
@@ -151,12 +162,17 @@ if ($held.loaded) {
 
 if (-not $incomplete) {
     $steps['cameraCrossCheck'] = Invoke-Check 'the camera cross-check' $crossScript (Join-Path $scratch 'cross.json')
+
+    # Constraint: the aim probe loads its own cell, so it runs last and the evidence names the cell it left.
+    $steps['aimProbe'] = Invoke-Check 'the aim probe' $aimScript (Join-Path $scratch 'aim.json') @('-Cell', $AimCell, '-Reference', $AimReference)
 }
 
 $passed = (-not $incomplete) -and ($failures.Count -eq 0)
 $report = [ordered]@{
     when = (Get-Date).ToString('o')
     cell = $Cell
+    aimCell = $AimCell
+    aimReference = $AimReference
     dll = $Dll
     steps = $steps
     failures = @($failures)
@@ -187,5 +203,5 @@ if (-not $passed) {
     exit 1
 }
 
-Write-Output "PASS the blocked-modal probe and the camera cross-check both passed; the evidence is in $Evidence"
+Write-Output "PASS the blocked-modal probe, the camera cross-check and the aim probe all passed; the evidence is in $Evidence"
 exit 0
