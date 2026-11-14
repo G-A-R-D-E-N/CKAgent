@@ -61,6 +61,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | Tool | What it does |
 |---|---|
 | `ck.status` | editor process, build, main window, command manifest age, whether the plugin answers, and the blocking dialog's title, button captions and the caption its dismissal presses |
+| `ck.dismiss` | clear the dialog blocking the editor on request, pressing the caption `ck.status` says it will and only reporting `dismissed` once the block is gone |
 | `ck.commands` | capture the live menu tree into a manifest of build-specific command ids, or read the cache |
 | `ck.invoke_command` | run a menu command by path (`File/Save`) or id; refuses while a modal has the window disabled |
 | `ck.save` | back the plugin up out of `Data`, post Save, and confirm the file actually changed |

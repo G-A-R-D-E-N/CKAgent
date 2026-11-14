@@ -727,6 +727,92 @@ public sealed class UiTools
 
         return new UiResult("ok", "ok", command, payload);
     }
+
+    [McpServerTool(Name = "ck.dismiss"),
+     Description("Clear the dialog blocking the editor on request, for when a caller sees the block before " +
+                 "anything has failed: it takes the dialog ui.modals flags as blocking, or the hwnd given, " +
+                 "presses the same caption the automatic dismissal uses, and reports that caption and whether " +
+                 "the block is gone. Nothing blocking is reported as nothing_blocked, not as an error.")]
+    public UiResult Dismiss(string? hwnd = null)
+    {
+        string target = (hwnd ?? string.Empty).Trim();
+        string title = string.Empty;
+
+        if (target.Length == 0)
+        {
+            if (!_plugin.TryCall("ui.modals", out string modals, out string modalsCode, out string modalsMessage))
+                return new UiResult("error", modalsCode, modalsMessage, null);
+
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(modals);
+                foreach (JsonElement modal in document.RootElement.EnumerateArray())
+                {
+                    if (!modal.TryGetProperty("blocking", out JsonElement blocking) || blocking.ValueKind != JsonValueKind.True)
+                        continue;
+
+                    target = modal.TryGetProperty("hwnd", out JsonElement handle) ? handle.GetString() ?? string.Empty : string.Empty;
+                    title = modal.TryGetProperty("title", out JsonElement caption) ? caption.GetString() ?? string.Empty : string.Empty;
+                    break;
+                }
+            }
+            catch (JsonException)
+            {
+                return new UiResult("error", "bad_payload", "ui.modals did not return JSON", null);
+            }
+
+            if (target.Length == 0)
+                return new UiResult("ok", "nothing_blocked", "no dialog is blocking the editor", null);
+        }
+
+        if (!_plugin.TryCall($"ui.dismiss {target}", out string dismissed, out string code, out string message))
+            return new UiResult("error", code, message, null);
+
+        // Constraint: the press is only reported as a dismissal once the block is gone, not when the click was posted.
+        bool cleared = false;
+        string blockedBy = string.Empty;
+        for (int attempt = 0; attempt < 12; ++attempt)
+        {
+            if (!_plugin.TryCall("status", out string status, out _, out _))
+                break;
+
+            blockedBy = StatusString(status, "blockedBy");
+            if (blockedBy.Length == 0)
+            {
+                cleared = true;
+                break;
+            }
+
+            Thread.Sleep(120);
+        }
+
+        JsonObject report = JsonNode.Parse(dismissed) as JsonObject ?? new JsonObject();
+        report["title"] = title;
+        report["cleared"] = cleared;
+        report["blockedBy"] = blockedBy;
+        string pressed = report["by"] is JsonNode chosen ? chosen.ToString() : string.Empty;
+
+        return cleared
+            ? new UiResult("ok", "dismissed", $"dismissed '{title}' with {pressed}", report.ToJsonString())
+            : new UiResult("ok", "still_blocked", $"pressed {pressed} but the editor is still blocked by '{blockedBy}'",
+                report.ToJsonString());
+    }
+
+    private static string StatusString(string json, string name)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            if (document.RootElement.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String)
+                return value.GetString() ?? string.Empty;
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
+        }
+
+        return string.Empty;
+    }
 }
 
 // Anchors can go stale after a cell load, so the refresh must be askable, not only automatic.

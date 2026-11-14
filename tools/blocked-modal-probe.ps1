@@ -437,6 +437,37 @@ if ($KeepModal) {
     }
 }
 
+# 7. ck.dismiss is for a caller who sees the block before anything failed, so it is asked to clear one.
+$forDismiss = New-HiddenModal -Phase 'dismiss'
+if (-not $forDismiss) {
+    $observed['dismissPhase'] = 'the hidden modal was not reproduced a third time'
+} else {
+    $asked = Invoke-Mcp 'ck.dismiss' '{}'
+    $observed['dismissReply'] = [ordered]@{ status = $asked.status; code = $asked.code; message = $asked.message }
+    if ($asked.status -ne 'ok' -or $asked.code -ne 'dismissed') {
+        $failures.Add("ck.dismiss did not clear the blocking dialog ($($asked.code) $($asked.message))")
+    } else {
+        $reply = $asked.payload | ConvertFrom-Json
+        $observed['dismissPayload'] = [ordered]@{ by = $reply.by; cleared = $reply.cleared; title = $reply.title; blockedBy = $reply.blockedBy }
+        if ("$($reply.cleared)" -ne 'True') {
+            $failures.Add('ck.dismiss reported the block still there, so it pressed a button that did not end the dialog')
+        }
+        if (-not $reply.by) {
+            $failures.Add('ck.dismiss did not say which caption it pressed')
+        } elseif ($reply.by -ne 'WM_CLOSE' -and @($forDismiss.buttons) -notcontains $reply.by) {
+            $failures.Add("ck.dismiss pressed '$($reply.by)', which the dialog does not have ($($forDismiss.buttons -join ', '))")
+        }
+        if ("$($reply.title)" -ne "$($forDismiss.title)") {
+            $failures.Add("ck.dismiss dismissed '$($reply.title)' rather than the blocking dialog '$($forDismiss.title)'")
+        }
+    }
+
+    if ((Get-Status).blockedBy) {
+        $failures.Add('the editor is still blocked after ck.dismiss returned')
+    }
+    if (Find-Blocking) { Close-Modal $forDismiss | Out-Null }
+}
+
 # The cell this probe closed has to come back, or the rest of the session runs against an empty render window.
 Restore-Cell
 

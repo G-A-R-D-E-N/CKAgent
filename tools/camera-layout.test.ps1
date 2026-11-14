@@ -366,6 +366,14 @@ if ((Test-Path -LiteralPath $Plugin -PathType Leaf) -and (Test-Path -LiteralPath
         }
     }
 
+    # The modal reply has keys of its own, and the same rule applies to them: the server may only read what
+    # a plugin reply actually carries, so a renamed key in ModalJson fails the read that depended on it.
+    $uiPath = Join-Path (Split-Path $Plugin -Parent) 'AgentEditorUi.cpp'
+    $uiText = if (Test-Path -LiteralPath $uiPath -PathType Leaf) { Get-Content -LiteralPath $uiPath -Raw } else { '' }
+    foreach ($key in 'blocking', 'hwnd', 'title', 'visible', 'enabled', 'ownerEnabled', 'owner', 'buttons') {
+        if ($uiText.Contains('\"' + $key + '\"')) { $emitted += $key }
+    }
+
     $serverKeys = @([regex]::Matches($serverText, 'Text\(root, "(\w+)"\)') | ForEach-Object { $_.Groups[1].Value })
     $serverKeys += @([regex]::Matches($serverText, 'TryGetProperty\("(\w+)"') | ForEach-Object { $_.Groups[1].Value })
     $serverKeys = @($serverKeys | Select-Object -Unique)
