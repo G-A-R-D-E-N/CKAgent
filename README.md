@@ -221,6 +221,12 @@ id, and where the corresponding class table, singleton and global sit in the 1.1
 
 ## Checks
 
+`CKAgent.Mcp.Tests` asserts the three ways a call can stay blocked after the retry — dismissed but still
+blocked, never dismissed, and a second queued dialog taking the block — against canned pipe replies, so none
+of them needs an editor. It is xunit v3 and runs in-process: `dotnet run --project CKAgent.Mcp.Tests -c
+Release`. Not `dotnet test`, which starts a VSTest host that this machine refuses to launch even for an empty
+project, and that is a limit of the machine, not of the project.
+
 `.github/workflows/camera-layout.yml` runs `tools/camera-layout.test.ps1` on every pull request. It fails
 when the plugin's hand-measured camera constants drift (world `0x70`, translate `world+0x30`, scale
 `world+0x3C`, row stride `4`), when the readable window stops covering the scale word, when the stride stops
