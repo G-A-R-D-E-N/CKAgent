@@ -174,6 +174,52 @@ function Close-Modal($modal) {
     return [bool](-not (Find-Blocking))
 }
 
+function New-HiddenModal([string]$Phase) {
+    # The dialog must be created while the editor is not foreground, or it appears visible and the reveal
+    # branch is never taken.
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $null = Set-EditorBackground
+        try {
+            Invoke-Plugin "ui.command $Command" | Out-Null
+        } catch {
+            $failures.Add("the probe could not run '$Command', which opens the modal: $($_.Exception.Message)")
+            return $null
+        }
+
+        $deadline = (Get-Date).AddSeconds($WaitSeconds)
+        $blocking = $null
+        while ((Get-Date) -lt $deadline) {
+            $blocking = Find-Blocking
+            if ($blocking) { break }
+            Start-Sleep -Milliseconds 300
+        }
+
+        if (-not $blocking) {
+            $observed["$Phase attempt$attempt"] = 'no blocking dialog appeared'
+            continue
+        }
+
+        if ($blocking.visible -eq $true) {
+            # Foreground beat the probe this time: dismiss it and try to create it out of focus instead.
+            $observed["$Phase attempt$attempt"] = "dialog visible hwnd=$($blocking.hwnd); dismissed and retried"
+            Close-Modal $blocking | Out-Null
+            continue
+        }
+
+        # The real state also leaves the frame disabled, which is what status reports; a hidden dialog that
+        # blocks nothing is not the failure mode this probe exists for.
+        if (-not (Get-Status).blockedBy) {
+            $observed["$Phase attempt$attempt"] = "dialog hidden but status names no block (hwnd=$($blocking.hwnd), title='$($blocking.title)'); dismissed and retried"
+            Close-Modal $blocking | Out-Null
+            continue
+        }
+
+        return $blocking
+    }
+
+    return $null
+}
+
 try {
     $status = Get-Status
 } catch {
@@ -198,50 +244,10 @@ if ($Command -match '^File/Data' -and $status.loaded) {
 }
 
 # 1. Create the dialog while the editor is in the background, and require it to be hidden.
-$hidden = $null
-$foreground = $null
-for ($attempt = 1; $attempt -le $Attempts -and -not $hidden; $attempt++) {
-    $foreground = Set-EditorBackground
-    try {
-        Invoke-Plugin "ui.command $Command" | Out-Null
-    } catch {
-        $failures.Add("the probe could not run '$Command', which opens the modal: $($_.Exception.Message)")
-        break
-    }
-
-    $deadline = (Get-Date).AddSeconds($WaitSeconds)
-    while ((Get-Date) -lt $deadline) {
-        $blocking = Find-Blocking
-        if ($blocking) { break }
-        Start-Sleep -Milliseconds 300
-    }
-
-    if (-not $blocking) {
-        $observed["attempt$attempt"] = 'no blocking dialog appeared'
-        continue
-    }
-
-    if ($blocking.visible -eq $true) {
-        # Foreground beat the probe this time: dismiss it and try to create it out of focus instead.
-        $observed["attempt$attempt"] = "dialog visible hwnd=$($blocking.hwnd); dismissed and retried"
-        Close-Modal $blocking | Out-Null
-        continue
-    }
-
-    # The real state also leaves the frame disabled, which is what status reports; a hidden dialog that
-    # blocks nothing is not the failure mode this probe exists for.
-    $blocked = (Get-Status).blockedBy
-    if (-not $blocked) {
-        $observed["attempt$attempt"] = "dialog hidden but status names no block (hwnd=$($blocking.hwnd), title='$($blocking.title)'); dismissed and retried"
-        Close-Modal $blocking | Out-Null
-        continue
-    }
-
-    $hidden = $blocking
-}
+$hidden = New-HiddenModal -Phase 'recover'
 
 if (-not $hidden) {
-    $observed['foreground'] = "0x$('{0:X}' -f $foreground.ToInt64())"
+    $observed['foreground'] = "0x$('{0:X}' -f ([ModalWin]::GetForegroundWindow()).ToInt64())"
     $evidenceJson = [ordered]@{ modal = $observed; failures = @($failures); passed = $false } | ConvertTo-Json -Depth 6
     if ($Evidence) { $evidenceJson | Set-Content -LiteralPath $Evidence -Encoding utf8 }
     Write-Output 'REPRODUCTION the hidden-modal state did not occur: the dialog was created visible or not at all'
@@ -322,6 +328,51 @@ if ($KeepModal) {
         if ($recovered.status -ne 'ok') {
             $failures.Add("the same call still fails after the dialog was dismissed: $($recovered.code) $($recovered.message)")
         }
+    }
+}
+
+# 5. A reveal that fails must take the still-blocked branch. That branch is otherwise unreachable here,
+# because the editor finishes with its own modal as soon as it is shown, so the server honours
+# CKAGENT_TEST_REVEAL_FAILS to refuse the reveal and leave the dialog exactly where the path expects it.
+if ($KeepModal) {
+    $observed['refusalPhase'] = 'skipped by -KeepModal'
+} else {
+    $refused = $null
+    $env:CKAGENT_TEST_REVEAL_FAILS = '1'
+    try {
+        $refused = New-HiddenModal -Phase 'refusal'
+        if (-not $refused) {
+            $observed['refusalPhase'] = 'the hidden modal was not reproduced a second time'
+        } else {
+            $refusedStatus = Get-Status
+            $observed['refusalBlockedBy'] = $refusedStatus.blockedBy
+            if (-not $refusedStatus.blockedBy) {
+                $failures.Add('status stopped naming the dialog before the refused-reveal phase')
+            }
+
+            $refusal = Invoke-Mcp $BlockedTool $BlockedArgs
+            $observed['refusalReply'] = [ordered]@{ status = $refusal.status; code = $refusal.code; message = $refusal.message }
+
+            $stillHidden = Find-Blocking
+            $observed['refusalStillHidden'] = if ($stillHidden) { $stillHidden.visible } else { 'gone' }
+
+            # The reply must name the dialog and say the reveal was refused, not that it is on screen.
+            if ("$($refusal.message)" -notmatch 'reveal was refused') {
+                $failures.Add("a failed reveal was not reported as a refused reveal: '$($refusal.message)'")
+            }
+            if ("$($refusal.message)" -notmatch [regex]::Escape($refused.title)) {
+                $failures.Add("the still-blocked reply does not name the dialog '$($refused.title)': $($refusal.message)")
+            }
+            if ("$($refusal.message)" -match 'already on screen') {
+                $failures.Add('a refused reveal was reported as a dialog already on screen')
+            }
+            if (-not $stillHidden -or $stillHidden.visible -ne $false) {
+                $failures.Add('the dialog is no longer hidden after a refused reveal, so the reveal was not actually refused')
+            }
+        }
+    } finally {
+        Remove-Item Env:CKAGENT_TEST_REVEAL_FAILS -ErrorAction SilentlyContinue
+        if ($refused) { Close-Modal $refused | Out-Null }
     }
 }
 

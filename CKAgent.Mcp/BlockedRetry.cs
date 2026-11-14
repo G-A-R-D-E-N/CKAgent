@@ -10,6 +10,10 @@ public static class BlockedEditor
     private const int RetryPauseMs = 250;
     private const int RetryAttempts = 2;
 
+    // Constraint: the still-blocked branch must stay reachable, so CKAGENT_TEST_REVEAL_FAILS=1 forces it.
+    private static bool RevealRefused =>
+        Environment.GetEnvironmentVariable("CKAGENT_TEST_REVEAL_FAILS") == "1";
+
     public static bool TryCall(PluginClient plugin, string command,
         out string payload, out string code, out string message)
     {
@@ -21,8 +25,9 @@ public static class BlockedEditor
             return false;
 
         // Invariant: the dialog is shown at most once per call; one that is already visible needs no reveal.
+        bool shouldReveal = !visible && handle is long;
         bool revealed = false;
-        if (!visible && handle is long shown)
+        if (shouldReveal && handle is long shown && !RevealRefused)
             revealed = plugin.TryCall($"ui.modals reveal 0x{shown:X}", out _, out _, out _);
 
         for (int attempt = 0; attempt < RetryAttempts; attempt++)
@@ -42,9 +47,14 @@ public static class BlockedEditor
 
         // Constraint: the original failure code must survive, so only the message gains the block reason.
         string handleText = (remaining ?? handle) is long h ? $"0x{h:X}" : "the dialog";
-        string shownText = revealed
-            ? $"it was revealed, so dismiss it with ck.ui method=ui.click args=\"{handleText} <button>\""
-            : "it is already on screen";
+        const string dismiss = "dismiss it with ck.ui method=ui.click args=\"{0} <button>\"";
+
+        // Invariant: three states must stay distinguishable, because a failed reveal is not a visible dialog.
+        string shownText = !shouldReveal
+            ? "it is already on screen"
+            : revealed
+                ? $"it was revealed, so {string.Format(dismiss, handleText)}"
+                : $"its reveal was refused, so it may still be hidden; {string.Format(dismiss, handleText)}";
         message = $"{message} (the editor is blocked by the modal dialog \"{still}\" at {handleText}; " +
                   $"{shownText} and retry)";
         return false;

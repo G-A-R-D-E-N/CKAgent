@@ -229,3 +229,9 @@ dialog alone, so the change can only come from the reveal-and-retry path. The MC
 `tools/mcp-call.mjs`, so the retry above the plugin pipe is what is exercised. Run it from the repository
 root with the editor running and no cell open; exit code 2 means the hidden state did not reproduce, not
 that the code failed, and the dialog is always dismissed with Cancel so the load order is untouched.
+
+A second phase covers the still-blocked reply. It starts the server with `CKAGENT_TEST_REVEAL_FAILS=1`, so
+the reveal is refused and the dialog stays hidden — the only way to reach that branch here, because the
+editor finishes with its own modal as soon as it is shown. The reply must then keep the original failure
+code, name the dialog, say the reveal was refused rather than that the dialog is on screen, and the
+dialog must still be hidden when it is over.
