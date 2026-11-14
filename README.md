@@ -245,6 +245,14 @@ the tilt must come from the new position, and a last one aims at two references 
 must turn to each in order and finish on the last. It loads the cell itself when needed; exit 2 means the
 cell or the reference was not found.
 
+`tools/cell-probe.ps1` covers the naming contract. It picks cells from the Cell View's own list, opens each
+with `ui.cellload`, and asserts `ck.cell` names the cell that was opened: `editorId` equal to the row,
+`formId` equal to the row's form id, the placement fields present, grid `0, 0` for an interior cell, a
+worldspace for an exterior one, and a different cell pointer for each cell. It then runs the same check
+against three fabricated replies — pointer-only, a wrong EditorID, and a missing form id — and fails if any
+of them would pass, so a regression back to pointer-only reporting fails this probe rather than passing
+with fewer fields. Exit 2 means the Cell View listed no named cell.
+
 A second phase covers the still-blocked reply. It starts the server with `CKAGENT_TEST_DISMISS_FAILS=1`, so
 the dismissal is skipped — the only way to reach that branch, because a dialog the server does handle is
 gone by the time the call returns. The reply must keep the original failure code, name the dialog, say it
