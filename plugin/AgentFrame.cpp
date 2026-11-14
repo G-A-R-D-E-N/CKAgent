@@ -150,6 +150,52 @@ namespace ckagent
 			return false;
 		}
 
+		constexpr float kFrameFit = 2.4f;           // standoff in bounding-sphere radii, so the box fits the view
+		constexpr float kFrameElevation = 0.5236f;  // 30 degrees above the target, so its top face is visible
+		constexpr float kMinRadius = 8.0f;          // a degenerate bound still frames instead of dividing to zero
+		constexpr float kMaxRadius = 8192.0f;       // larger than any interior cell, so a broken box cannot fly off
+
+		struct Bounds
+		{
+			NiPoint3 center{};
+			NiPoint3 min{};
+			NiPoint3 max{};
+			float radius = kMinRadius;
+			bool fromReference = false;
+		};
+
+		// Invariant: bounds are in the reference's own units, so the centre is its position plus the box middle.
+		Bounds ReadBounds(EditorRef* refr)
+		{
+			Bounds bounds;
+			bounds.center = refr->GetPosition();
+			const NiPoint3 min = refr->GetBoundMin();
+			const NiPoint3 max = refr->GetBoundMax();
+			bounds.min = min;
+			bounds.max = max;
+			const float ex = max.x - min.x;
+			const float ey = max.y - min.y;
+			const float ez = max.z - min.z;
+			if (std::isfinite(ex) && std::isfinite(ey) && std::isfinite(ez) && ex > 0.0f && ey > 0.0f && ez > 0.0f)
+			{
+				bounds.center.x += (min.x + max.x) * 0.5f;
+				bounds.center.y += (min.y + max.y) * 0.5f;
+				bounds.center.z += (min.z + max.z) * 0.5f;
+				bounds.radius = 0.5f * std::sqrt(ex * ex + ey * ey + ez * ez);
+				bounds.fromReference = true;
+			}
+			if (bounds.radius > kMaxRadius) bounds.radius = kMaxRadius;
+			return bounds;
+		}
+
+		bool IsNumber(const std::string& word)
+		{
+			if (word.empty()) return false;
+			char* end = nullptr;
+			std::strtod(word.c_str(), &end);
+			return end && *end == '\0';
+		}
+
 		// The pose must be the verified pair: SetPosition plus the measured view matrix.
 		void SetViewPose(CameraApi* camera, float x, float y, float z, float yaw, float pitch)
 		{
@@ -233,35 +279,11 @@ namespace ckagent
 
 		const NiPoint3 targetPoint = hit.ref->GetPosition();
 
-		// Invariant: bounds are in the reference's own units, so the box centre is its position plus the box middle.
-		constexpr float kFrameFit = 2.4f;           // standoff in bounding-sphere radii, so the box fits the view
-		constexpr float kFrameElevation = 0.5236f;  // 30 degrees above the target, so its top face is visible
-		constexpr float kMinRadius = 8.0f;          // a degenerate bound still frames instead of dividing to zero
-		constexpr float kMaxRadius = 8192.0f;       // larger than any interior cell, so a broken box cannot fly off
-
-		const NiPoint3 boundsMin = hit.ref->GetBoundMin();
-		const NiPoint3 boundsMax = hit.ref->GetBoundMax();
-		const float extentX = boundsMax.x - boundsMin.x;
-		const float extentY = boundsMax.y - boundsMin.y;
-		const float extentZ = boundsMax.z - boundsMin.z;
-		const bool haveBounds = std::isfinite(extentX) && std::isfinite(extentY) && std::isfinite(extentZ) &&
-			extentX > 0.0f && extentY > 0.0f && extentZ > 0.0f;
-
-		NiPoint3 center = targetPoint;
-		float radius = 0.0f;
-		const char* boundsSource = "fallback";
-		if (haveBounds)
-		{
-			center.x = targetPoint.x + (boundsMin.x + boundsMax.x) * 0.5f;
-			center.y = targetPoint.y + (boundsMin.y + boundsMax.y) * 0.5f;
-			center.z = targetPoint.z + (boundsMin.z + boundsMax.z) * 0.5f;
-			radius = 0.5f * std::sqrt(extentX * extentX + extentY * extentY + extentZ * extentZ);
-			boundsSource = "reference";
-		}
-
-		if (!(radius > kMinRadius)) radius = kMinRadius;
-		if (radius > kMaxRadius) radius = kMaxRadius;
-
+		// Constraint: the standoff and the centre come from the same bounds read, so frame and orbit agree.
+		const Bounds bounds = ReadBounds(hit.ref);
+		const NiPoint3 center = bounds.center;
+		const float radius = bounds.radius;
+		const char* boundsSource = bounds.fromReference ? "reference" : "fallback";
 		const float distance = requestedDistance > 0.0f ? requestedDistance : kFrameFit * radius;
 		const float pitch = -kFrameElevation;
 		const float cosPitch = std::cos(pitch);
@@ -290,7 +312,7 @@ namespace ckagent
 			targetPoint.x, targetPoint.y, targetPoint.z,
 			center.x, center.y, center.z,
 			after.x, after.y, after.z,
-			boundsMin.x, boundsMin.y, boundsMin.z, boundsMax.x, boundsMax.y, boundsMax.z,
+			bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z,
 			boundsSource, radius, distance, yaw, pitch, span, aim,
 			aim > 0.999 ? "true" : "false",
 			static_cast<unsigned long>(hit.count));
@@ -725,19 +747,60 @@ namespace ckagent
 		}
 
 		const std::vector<std::string> words = SplitWords(args);
-		if (words.size() < 5)
+		if (words.empty())
 		{
 			errorCode = "bad_args";
-			errorMessage = "orbit needs x y z distance angle [pitch]";
+			errorMessage = "orbit needs x y z distance angle [pitch], or a reference name [distance] [angle] [pitch]";
 			return false;
 		}
 
-		const float x = static_cast<float>(std::atof(words[0].c_str()));
-		const float y = static_cast<float>(std::atof(words[1].c_str()));
-		const float z = static_cast<float>(std::atof(words[2].c_str()));
-		const float distance = static_cast<float>(std::atof(words[3].c_str()));
-		const float angle = static_cast<float>(std::atof(words[4].c_str()));
-		const float pitch = words.size() > 5 ? static_cast<float>(std::atof(words[5].c_str())) : 0.0f;
+		NiPoint3 pivot{ 0.0f, 0.0f, 0.0f };
+		float distance = 0.0f;
+		float angle = 0.0f;
+		float pitch = 0.0f;
+		std::string reference;
+
+		// Constraint: a named target resolves through the loaded cell, so an orbit can name what frame framed.
+		if (!IsNumber(words[0]))
+		{
+			auto* cell = reinterpret_cast<EditorCell*>(target.cell);
+			if (!cell)
+			{
+				errorCode = "no_cell";
+				errorMessage = "no cell is loaded; load one before orbiting a reference";
+				return false;
+			}
+
+			Match hit;
+			if (!ResolveReference(cell, words[0], hit, errorCode, errorMessage))
+				return false;
+
+			// Constraint: the pivot is the same box centre frame uses, so the two tools agree on the object.
+			const Bounds bounds = ReadBounds(hit.ref);
+			pivot = bounds.center;
+			reference = hit.id.empty() ? hit.baseId : hit.id;
+			// Constraint: a zero radius means "size it from the bounds", the same default frame uses.
+			const float asked = words.size() > 1 ? static_cast<float>(std::atof(words[1].c_str())) : 0.0f;
+			distance = asked > 0.0f ? asked : kFrameFit * bounds.radius;
+			angle = words.size() > 2 ? static_cast<float>(std::atof(words[2].c_str())) : 0.0f;
+			pitch = words.size() > 3 ? static_cast<float>(std::atof(words[3].c_str())) : 0.0f;
+		}
+		else
+		{
+			if (words.size() < 5)
+			{
+				errorCode = "bad_args";
+				errorMessage = "orbit needs x y z distance angle [pitch], or a reference name [distance] [angle] [pitch]";
+				return false;
+			}
+
+			pivot = NiPoint3{ static_cast<float>(std::atof(words[0].c_str())),
+				static_cast<float>(std::atof(words[1].c_str())),
+				static_cast<float>(std::atof(words[2].c_str())) };
+			distance = static_cast<float>(std::atof(words[3].c_str()));
+			angle = static_cast<float>(std::atof(words[4].c_str()));
+			pitch = words.size() > 5 ? static_cast<float>(std::atof(words[5].c_str())) : 0.0f;
+		}
 
 		// Constraint: a radius of zero or less is not a circle, so the distance must be positive.
 		if (!(distance > 0.0f))
@@ -747,17 +810,15 @@ namespace ckagent
 			return false;
 		}
 
-		const NiPoint3 pivot{ x, y, z };
-
 		// Constraint: the editor orbits and zooms about its own pivot, so the focus must be set to this point.
 		camera->SetPivot(pivot, 1.0f, false);
 
 		// Position must come from the pivot minus the view direction, so the circle keeps the radius asked for.
 		const double cp = std::cos(pitch);
 		camera->SetPosition(NiPoint3{
-			x - distance * static_cast<float>(std::cos(angle) * cp),
-			y - distance * static_cast<float>(std::sin(angle) * cp),
-			z - distance * static_cast<float>(std::sin(pitch)) });
+			pivot.x - distance * static_cast<float>(std::cos(angle) * cp),
+			pivot.y - distance * static_cast<float>(std::sin(angle) * cp),
+			pivot.z - distance * static_cast<float>(std::sin(pitch)) });
 
 		NiMatrix43 rotate{};
 		const ViewMatrix view = MakeViewMatrix(angle, pitch);
@@ -775,11 +836,12 @@ namespace ckagent
 		const NiPoint3 reported = camera->GetPivot();
 		const bool hasPivot = camera->HasPivot();
 
-		char buf[768];
+		char buf[900];
 		std::snprintf(buf, sizeof buf,
-			"{\"pivot\":[%.4f,%.4f,%.4f],\"pivotRead\":[%.4f,%.4f,%.4f],\"hasPivot\":%s,"
+			"{\"reference\":\"%s\",\"pivot\":[%.4f,%.4f,%.4f],\"pivotRead\":[%.4f,%.4f,%.4f],\"hasPivot\":%s,"
 			"\"angle\":%.4f,\"pitch\":%.4f,\"distance\":%.2f,\"camera\":[%.4f,%.4f,%.4f],"
 			"\"span\":%.2f,\"aim\":%.4f,\"aligned\":%s}",
+			reference.c_str(),
 			pivot.x, pivot.y, pivot.z,
 			reported.x, reported.y, reported.z,
 			hasPivot ? "true" : "false",

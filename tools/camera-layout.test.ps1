@@ -160,15 +160,35 @@ if (Test-Path -LiteralPath $Frame -PathType Leaf) {
         $failures.Add("$Frame has no RunFrameTool, so ck.frame is missing or unreachable")
     } else {
         foreach ($expectation in @(
-                @('GetBoundMin\(\)', "the reference's minimum bound is not read, so the standoff cannot come from its size"),
-                @('GetBoundMax\(\)', "the reference's maximum bound is not read, so the extents are unknown"),
+                @('ReadBounds\(hit\.ref\)', 'the reference bounds are not read, so the standoff cannot come from its size'),
                 @('kFrameFit \* radius', 'the default standoff is not derived from the bounding-sphere radius'),
                 @('center\.z - distance \* std::sin\(pitch\)', 'the camera height is not derived from the box centre and the standoff'),
-                @('AimAgainst\(camera, after, center\)', 'the aim is graded against the reference position rather than the box centre it framed'),
-                @('kMinRadius', 'a degenerate bound has no floor, so a zero-radius object divides the standoff to zero'),
-                @('kMaxRadius', 'a broken bound has no ceiling, so a huge box throws the camera out of the cell'))) {
+                @('AimAgainst\(camera, after, center\)', 'the aim is graded against the reference position rather than the box centre it framed'))) {
             if ($run.Value -notmatch $expectation[0]) {
                 $failures.Add("RunFrameTool no longer matches /$($expectation[0])/: $($expectation[1])")
+            }
+        }
+
+        # The bounds read is shared with the orbit, so it has to stay the one both tools use.
+        $boundsRead = [regex]::Match($frameText, 'Bounds ReadBounds\([\s\S]*?\r?\n\t\t\}')
+        $observed['readBounds'] = if ($boundsRead.Success) { 'found' } else { 'missing' }
+
+        if (-not $boundsRead.Success) {
+            $failures.Add("$Frame has no ReadBounds, so frame and orbit cannot agree on the object's centre")
+        } else {
+            foreach ($expectation in @(
+                    @('GetBoundMin\(\)', "the reference's minimum bound is not read"),
+                    @('GetBoundMax\(\)', "the reference's maximum bound is not read"),
+
+                    @('kMaxRadius', 'a broken bound has no ceiling, so a huge box throws the camera out of the cell'),
+                    @('std::isfinite\(', 'a non-finite extent is not refused before it reaches the pose'))) {
+                if ($boundsRead.Value -notmatch $expectation[0]) {
+                    $failures.Add("ReadBounds no longer matches /$($expectation[0])/: $($expectation[1])")
+                }
+            }
+
+            if ($frameText -notmatch 'radius = kMinRadius') {
+                $failures.Add('the bounds have no radius floor, so a zero-radius object divides the standoff to zero')
             }
         }
 
@@ -215,6 +235,27 @@ if (Test-Path -LiteralPath $Frame -PathType Leaf) {
         # the control a no-op that still reports a zoom factor.
         if ($lens.Value -match 'camera->Zoom\(') {
             $failures.Add("RunLensTool calls the editor's Zoom, which leaves the frustum unchanged, so the zoom would do nothing")
+        }
+    }
+}
+
+# Regression: an orbit must accept the reference frame accepts, or the two tools disagree about the
+# target and one of them circles a point the caller never named.
+if (Test-Path -LiteralPath $Frame -PathType Leaf) {
+    $orbitText = Get-Content -LiteralPath $Frame -Raw
+    $orbitName = [regex]::Match($orbitText, 'bool RunOrbitTool[\s\S]*?\r?\n\t\}')
+
+    if ($orbitName.Success) {
+        foreach ($expectation in @(
+                @('IsNumber\(words\[0\]\)', 'the tool cannot tell a reference name from world coordinates'),
+                @('ResolveReference\(cell, words\[0\]', 'a named target is not resolved through the loaded cell'),
+                @('ReadBounds\(hit\.ref\)', "a named target does not use the bounds the frame tool uses"),
+                @('kFrameFit \* bounds\.radius', 'a named target does not size its default distance from the bounds'),
+                @('no_cell', 'orbiting a name with no cell loaded is not refused'),
+                @('\\\"reference\\\":', 'the reply does not name the reference it circled'))) {
+            if ($orbitName.Value -notmatch $expectation[0]) {
+                $failures.Add("RunOrbitTool no longer matches /$($expectation[0])/: $($expectation[1])")
+            }
         }
     }
 }
