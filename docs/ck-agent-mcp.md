@@ -487,6 +487,38 @@ An unmatched name comes back with candidates from the loaded cell (`no reference
 matches X among 3616 references; for example: Loot_Prewar_Safe, MS07cCompanionMarker, ...`), because a
 name the caller cannot discover is not a usable tool.
 
+### Interior against a scaled worldspace, measured
+
+`DiamondCityFX` is a worldspace whose contents are scaled, so it is the case where a hidden scale factor
+would break the pose math. It cannot be reached by name — `ui.cellload` resolves whatever the Cell View is
+currently listing, so the worldspace combo has to be switched first (`ui.items <combo>`, then
+`ui.select <combo> 4`), and a cell row is then selected and double-clicked. Cell `00000FC4` ("Wilderness",
+grid `0, 0`) is the first one with content.
+
+| | `AndrewStation01` (interior) | `DiamondCityFX` (exterior, grid `0, 0`) |
+|---|---|---|
+| `camera get` `scale` | `1.0000` | `1.0000` |
+| probe `0x70` scale word | `1` | `1` |
+| node rows, yaw 0 | `[[0,-1,0],[1,0,0],[0,0,1]]` | `[[0,-1,0],[1,0,0],[0,0,1]]` |
+| scene rows, yaw 0 | `[[1,0,0],[0,0,1],[0,-1,0]]` | `[[1,0,0],[0,0,1],[0,-1,0]]` |
+| `frame` distance asked / reported | `256` / `256.00` | `512` / `512.00` |
+| `aim` | `1.0000` | `1.0000` |
+| `rotationOffset` | `6.0000` | `6.0000` |
+| `camera-tool-cross-check.ps1` | PASS | PASS |
+
+The same pose gives the same matrices in both worlds, and the camera's world transform carries `scale 1`
+in both, so no world scale reaches the pose math: positions, yaw and standoff distances are plain world
+units. The reported offset is not a scale artefact either — `6.0` is `Σ|R - S|` at an axis-aligned pose,
+and it matches in both worlds because both poses are axis-aligned.
+
+Limits of that finding: `DiamondCityFX`'s cells hold one or two references each (`ProceduralWater` and a
+landscape), so nothing scaled was framed there — only the worldspace's own transform chain was measured. A
+scale applied to geometry or at render time, rather than to the camera's parent, would not appear in any of
+these readings, and the rendered image was not inspected.
+
+Reproduce with `tools/ck-surface-probe/camera-tool-cross-check.ps1` in each world; it compares the tool's
+node matrix against the probe's memory read, so the numbers do not come from the plugin's own decode.
+
 ### Camera move and lookat, measured
 
 - **Move** is `MoveLocal`, so the step is in the camera's own axes: from a yaw-90° view, stepping
