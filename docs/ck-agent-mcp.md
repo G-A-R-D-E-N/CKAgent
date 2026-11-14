@@ -683,6 +683,14 @@ checks the view row is node row 1, checks that row carries the requested yaw and
 translation both nodes share. Measured over the whole sweep: worst offset error `0.0002`, worst component
 difference between the view row and node row 1 `0`, worst forward error `0.000049`.
 
+`tools/live-evidence.ps1` runs both live checks in one pass and writes one file. They need opposite editor
+states — the modal probe opens `File/Data`, which the editor greys out while a cell is open, and the sweep
+needs a cell — so it reads `status.loaded` first, then runs the probe before the cell and the sweep after it,
+or the sweep alone when a cell is already open and reports the probe as not run with exit `2`. Measured with
+no cell open: `blockedModal: pass`, `cellLoad: exit 0`, `cameraCrossCheck: pass`, one `81 KB` file holding both
+reports and 55 poses, exit `0`; re-run with the cell still loaded it reports the sweep pass, the probe exit
+`2` with the reason, and exits `2`.
+
 `camera get` reports both matrices, so the difference is visible without a probe. On `DmndRadio01` at yaw 0
 the node rows are `(1,0,0) (0,-0,-1) (0,1,-0)` and `sceneRotate` holds `(0,-0,-1) (0,1,-0) (1,0,0)` — the
 node's rows in the order `r1, r2, r0`, which is what the sweep then checks componentwise at all 55 poses

@@ -254,6 +254,11 @@ succeeds and must leave the dialog alone, so the change can only come from the d
 root with the editor running and no cell open; exit code 2 means the hidden state did not reproduce, not
 that the code failed, and the dialog is always dismissed with Cancel so the load order is untouched.
 
+`tools/live-evidence.ps1` runs that probe and the camera sweep together and writes one evidence file, since
+the two need opposite editor states — the probe needs no cell, the sweep needs one. It runs the probe first,
+loads the cell through `ck.cell_load`, then runs the sweep, and says so with exit 2 when a cell is already
+open and only half of that is possible.
+
 `tools/aim-probe.ps1` covers the aim contract the same way: it places the camera level, above, below and
 directly over one reference, calls `ck.aim` through the server, and asserts the camera did not move, the
 aim is 1.0, the tilt equals the angle between camera and target, and the view row re-read afterwards dots
