@@ -58,7 +58,6 @@ namespace ckagent
 		constexpr std::uintptr_t kCameraTableOffset = 0x2FD4828;        // offset of BGSRenderWindowCamera's class table
 		constexpr std::size_t kCameraSize = 0x88;                       // BGSRenderWindowCamera size, so a read stays inside it
 		constexpr std::uintptr_t kRenderWindowSize = 0x180;             // BGSRenderWindow size, so a read stays inside it
-		constexpr std::uintptr_t kCurrentCellOffset = 0xF8;             // offset of _CurrentCell in BGSRenderWindow (CKPE layout)
 
 		// The view must be driven through the scene camera (findings/ckpe-render-control.md holds the chain).
 		constexpr std::uintptr_t kCameraNiCameraOffset = 0x10;  // offset of the NiCamera pointer inside the camera object
@@ -667,7 +666,7 @@ namespace ckagent
 			{
 				// Constraint: the editor's own controls must be driven from this thread, where a handler
 				// that opens a dialog or requires a cell load runs inline and the reply reports it.
-				if (!RunEditorTool(tool, args, payload, errorCode, errorMessage))
+				if (!RunEditorTool(g_renderWindow, tool, args, payload, errorCode, errorMessage))
 				{
 					call.reply = "RPLY " + seq + " ERR " + errorCode + " " + errorMessage + "\n";
 					return;

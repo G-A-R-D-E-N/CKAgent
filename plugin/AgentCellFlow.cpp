@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <commctrl.h>
 
+#include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -179,7 +181,7 @@ namespace ckagent
 		}
 	}
 
-	bool RunCellTool(const std::string& tool, const std::string& args,
+	bool RunCellTool(std::uintptr_t window, const std::string& tool, const std::string& args,
 		std::string& payload, std::string& errorCode, std::string& errorMessage)
 	{
 		using namespace editor;
@@ -291,6 +293,32 @@ namespace ckagent
 			}
 
 			payload = "{\"total\":" + std::to_string(count) + ",\"matched\":" + std::to_string(matched) + ",\"rows\":[" + rows + "]}";
+			return true;
+		}
+
+		if (tool == "ui.cellclose")
+		{
+			// Constraint: File/Data is greyed while the render window holds a cell, so closing frees that slot.
+			if (!window)
+			{
+				errorCode = "window_unavailable";
+				errorMessage = "the render window is not resolved yet";
+				return false;
+			}
+
+			auto* slot = reinterpret_cast<std::uintptr_t*>(window + kCurrentCellOffset);
+			const std::uintptr_t previous = *slot;
+			if (!previous)
+			{
+				payload = "{\"closed\":false,\"wasLoaded\":false}";
+				return true;
+			}
+
+			*slot = 0;
+			char buf[220];
+			std::snprintf(buf, sizeof buf, "{\"closed\":%s,\"was\":\"0x%llX\"}",
+				*slot ? "false" : "true", static_cast<unsigned long long>(previous));
+			payload = buf;
 			return true;
 		}
 

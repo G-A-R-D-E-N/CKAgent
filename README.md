@@ -83,7 +83,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 through `ck.ui`:
 
 `ui.frame`, `ui.windows`, `ui.tree`, `ui.items`, `ui.select`, `ui.notify`, `ui.command`, `ui.menu`,
-`ui.click`, `ui.modals`, `ui.cells`, `ui.cellload`, `ui.dataload`
+`ui.click`, `ui.modals`, `ui.cells`, `ui.cellload`, `ui.cellclose`, `ui.dataload`
 
 ---
 
@@ -250,14 +250,16 @@ opens `File/Data` while the editor is in the background so the dialog is created
 names it, then makes a call that must fail (`ck.frame` with no cell loaded) and asserts no blocking dialog
 is left afterwards and the reply does not send anyone off to click — with a control call first that
 succeeds and must leave the dialog alone, so the change can only come from the dismiss-and-retry path. The MCP step runs through
-`tools/mcp-call.mjs`, so the retry above the plugin pipe is what is exercised. Run it from the repository
-root with the editor running and no cell open; exit code 2 means the hidden state did not reproduce, not
-that the code failed, and the dialog is always dismissed with Cancel so the load order is untouched.
+`tools/mcp-call.mjs`, so the retry above the plugin pipe is what is exercised. It runs with a cell open: it
+closes the cell the render window holds (`ui.cellclose`), checks that `File/Data` is available again, and
+reloads the same cell at the end, including when it stops early. Exit code 2 means the hidden state did not
+reproduce, not that the code failed, and the dialog is always dismissed with Cancel so the load order is
+untouched.
 
 `tools/live-evidence.ps1` runs that probe and the camera sweep together and writes one evidence file, since
-the two need opposite editor states — the probe needs no cell, the sweep needs one. It runs the probe first,
-loads the cell through `ck.cell_load`, then runs the sweep, and says so with exit 2 when a cell is already
-open and only half of that is possible.
+the two need opposite editor states — the probe needs `File/Data` available, the sweep needs a cell. The
+probe closes a loaded cell and restores it, so the wrapper always runs the probe, makes sure a cell is
+loaded, then runs the sweep in one pass.
 
 `tools/aim-probe.ps1` covers the aim contract the same way: it places the camera level, above, below and
 directly over one reference, calls `ck.aim` through the server, and asserts the camera did not move, the

@@ -4,12 +4,10 @@ Runs the blocked-modal probe and the camera cross-check in one pass, into one ev
 
 .DESCRIPTION
 The two checks need opposite editor states. The probe opens `File/Data`, which the editor greys out while a
-cell is open; the cross-check reads the camera transform, which needs a cell. So the wrapper reads
-`status.loaded` first and orders the work to match:
-
-  - no cell loaded: run the probe, load the cell through `ck.cell_load`, then run the cross-check;
-  - a cell already loaded: run the cross-check, and report the probe as not run, naming the reason, because
-    closing a cell is the operator's move and not something this wrapper can do.
+cell is open, and the cross-check reads the camera transform, which needs one. The probe closes a loaded cell
+itself and puts it back, so the order is always the same: probe, make sure a cell is loaded, then the
+cross-check. A cell already open is reloaded by the probe's own restore, which is why the load step reports
+`already loaded` rather than loading it twice.
 
 Both scripts write their own JSON when given `-Evidence`, so the wrapper points each at a temporary file and
 embeds the parsed result, which is what makes one file enough. The child output is kept for the failed step,
@@ -136,26 +134,23 @@ try {
 
 $steps['editor'] = [ordered]@{ pid = $status.pid; loaded = $status.loaded; blockedBy = $status.blockedBy }
 
-if ($status.loaded) {
-    $steps['cameraCrossCheck'] = Invoke-Check 'the camera cross-check' $crossScript (Join-Path $scratch 'cross.json')
-    $steps['blockedModal'] = [ordered]@{
-        exit = 2
-        passed = $false
-        reason = "a cell is loaded, so File/Data is disabled and the hidden-modal state cannot be rebuilt; close the cell and re-run"
-    }
-    $incomplete = $true
-} else {
-    $steps['blockedModal'] = Invoke-Check 'the blocked-modal probe' $probeScript (Join-Path $scratch 'probe.json')
+# The probe closes a loaded cell itself and puts it back, so it runs first whatever the starting state.
+$steps['blockedModal'] = Invoke-Check 'the blocked-modal probe' $probeScript (Join-Path $scratch 'probe.json')
 
-    # The cross-check needs a loaded cell, and the probe needed it absent, so the load belongs between them.
+$held = (Invoke-Plugin 'cell') | ConvertFrom-Json
+if ($held.loaded) {
+    $steps['cellLoad'] = [ordered]@{ cell = $held.editorId; exit = 0; status = 'already loaded'; code = 'ok' }
+} else {
     $load = Invoke-Mcp 'ck.cell_load' ('{"name":"' + $Cell + '"}')
     $steps['cellLoad'] = [ordered]@{ cell = $Cell; exit = $load.exit; status = $load.reply.status; code = $load.reply.code }
     if ($load.exit -ne 0 -or "$($load.reply.status)" -ne 'ok') {
         $failures.Add("the cell '$Cell' did not load ($($load.reply.code) $($load.reply.message)), so the cross-check cannot run")
         $incomplete = $true
-    } else {
-        $steps['cameraCrossCheck'] = Invoke-Check 'the camera cross-check' $crossScript (Join-Path $scratch 'cross.json')
     }
+}
+
+if (-not $incomplete) {
+    $steps['cameraCrossCheck'] = Invoke-Check 'the camera cross-check' $crossScript (Join-Path $scratch 'cross.json')
 }
 
 $passed = (-not $incomplete) -and ($failures.Count -eq 0)

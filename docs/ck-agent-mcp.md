@@ -419,6 +419,7 @@ Loading a cell needs no mouse: the plugin drives the editor's own controls on th
 | `ui.dismiss <hwnd>` | press the button that abandons a dialog's pending work — `Cancel`, then `Close`, else `WM_CLOSE` — so a blocking modal clears without knowing its captions; OK is never pressed |
 | `ui.modals [reveal <hwnd>]` | list every dialog with its owner, visibility, enabled state and button captions, flagging as `blocking` the invisible one that owns a disabled window; `reveal` shows one |
 | `ui.cells [filter]` / `ui.cellload <name>` | name-addressed cell list, and open one |
+| `ui.cellclose` | free the cell the render window holds, at `BGSRenderWindow+0xF8`, which is the state `File/Data` checks before it opens; reports the pointer it cleared, and `closed:false` when nothing was held |
 | `ui.dataload <plugin>` | tick a master file in `File > Data` (two calls: the command, then the dialog) |
 
 Measured flow (editor 1.11.246.0, master `Fallout4.esm`): `ui.cellload AndrewStation01` opens
@@ -685,11 +686,14 @@ difference between the view row and node row 1 `0`, worst forward error `0.00004
 
 `tools/live-evidence.ps1` runs both live checks in one pass and writes one file. They need opposite editor
 states — the modal probe opens `File/Data`, which the editor greys out while a cell is open, and the sweep
-needs a cell — so it reads `status.loaded` first, then runs the probe before the cell and the sweep after it,
-or the sweep alone when a cell is already open and reports the probe as not run with exit `2`. Measured with
-no cell open: `blockedModal: pass`, `cellLoad: exit 0`, `cameraCrossCheck: pass`, one `81 KB` file holding both
-reports and 55 poses, exit `0`; re-run with the cell still loaded it reports the sweep pass, the probe exit
-`2` with the reason, and exits `2`.
+needs a cell — and the probe closes a loaded cell itself (`ui.cellclose`, which clears
+`BGSRenderWindow+0xF8` and re-reads it) and reloads the same cell afterwards, so the wrapper always runs the
+probe, ensures a cell, then the sweep. Measured on `DmndRadio01` with the cell already open: the probe closed
+it (`was 0x1E3D5A1D330`, `loadedAfterClose false`), found and dismissed the hidden `Data` dialog, restored the
+cell (`status ok`), and the run reported `blockedModal: pass`, `cellLoad: exit 0`, `cameraCrossCheck: pass`,
+exit `0` into one file. The close is checked rather than assumed: a write that does not reach the render
+window leaves the menu greyed, and the probe stops with exit `2` instead of pretending `File/Data` is
+available. `status.loaded` is not the test for that — it reads the TES placement, which stays after a close.
 
 `camera get` reports both matrices, so the difference is visible without a probe. On `DmndRadio01` at yaw 0
 the node rows are `(1,0,0) (0,-0,-1) (0,1,-0)` and `sceneRotate` holds `(0,-0,-1) (0,1,-0) (1,0,0)` — the

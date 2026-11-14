@@ -685,7 +685,7 @@ public sealed class UiTools
     private static readonly string[] Methods =
     {
         "ui.frame", "ui.windows", "ui.tree", "ui.items", "ui.select", "ui.notify",
-        "ui.command", "ui.menu", "ui.click", "ui.modals", "ui.cells", "ui.cellload", "ui.dataload",
+        "ui.command", "ui.menu", "ui.click", "ui.modals", "ui.cells", "ui.cellload", "ui.cellclose", "ui.dataload",
     };
 
     private readonly PluginClient _plugin;

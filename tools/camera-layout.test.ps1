@@ -313,7 +313,9 @@ if ((Test-Path -LiteralPath $Plugin -PathType Leaf) -and (Test-Path -LiteralPath
     $serverText = Get-Content -LiteralPath $Server -Raw
     $probeText = Get-Content -LiteralPath $Probe -Raw
 
-    $cellOffset = Get-Constant $cellPlugin 'kCurrentCellOffset'
+    $sharedPath = Join-Path (Split-Path $Plugin -Parent) 'AgentEditorShared.h'
+    $sharedText = if (Test-Path -LiteralPath $sharedPath -PathType Leaf) { Get-Content -LiteralPath $sharedPath -Raw } else { '' }
+    $cellOffset = Get-Constant ($cellPlugin + "`n" + $sharedText) 'kCurrentCellOffset'
     $tesOffset = Get-Constant $cellPlugin 'kTesSingletonOffset'
     $observed['kCurrentCellOffset'] = if ($null -ne $cellOffset) { '0x{0:X}' -f $cellOffset } else { 'missing' }
     $observed['kTesSingletonOffset'] = if ($null -ne $tesOffset) { '0x{0:X}' -f $tesOffset } else { 'missing' }
@@ -327,6 +329,12 @@ if ((Test-Path -LiteralPath $Plugin -PathType Leaf) -and (Test-Path -LiteralPath
         if ($cellPlugin -notmatch 'g_renderWindow \+ kCurrentCellOffset') {
             $failures.Add('the cell is not read at g_renderWindow + kCurrentCellOffset, so the constant no longer describes the read')
         }
+    }
+
+    # Regression: the modal probe cannot rebuild the hidden state while a cell is open unless the cell can close.
+    $flowClose = if (Test-Path -LiteralPath $Flow -PathType Leaf) { Get-Content -LiteralPath $Flow -Raw } else { '' }
+    if ($flowClose -notmatch 'ui\.cellclose' -or $flowClose -notmatch '\*slot = 0') {
+        $failures.Add("$Flow no longer closes the render window's cell, so the modal probe cannot run with a cell loaded")
     }
 
     if ($null -ne $tesOffset) {

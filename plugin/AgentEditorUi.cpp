@@ -613,7 +613,7 @@ namespace ckagent
 
 	}
 
-	bool RunEditorTool(const std::string& tool, const std::string& args,
+	bool RunEditorTool(std::uintptr_t window, const std::string& tool, const std::string& args,
 		std::string& payload, std::string& errorCode, std::string& errorMessage)
 	{
 		using namespace editor;
@@ -929,8 +929,8 @@ namespace ckagent
 			return true;
 		}
 
-		if (tool == "ui.dataload" || tool == "ui.cells" || tool == "ui.cellload")
-			return RunCellTool(tool, args, payload, errorCode, errorMessage);
+		if (tool == "ui.dataload" || tool == "ui.cells" || tool == "ui.cellload" || tool == "ui.cellclose")
+			return RunCellTool(window, tool, args, payload, errorCode, errorMessage);
 
 		errorCode = "unknown_tool";
 		errorMessage = tool;

@@ -238,10 +238,39 @@ if ($status.blockedBy) {
     exit 1
 }
 
-# File/Data is greyed out whenever a cell is open, and the greying is why the dialog cannot be opened.
-if ($Command -match '^File/Data' -and $status.loaded) {
-    Write-Output 'REPRODUCTION File/Data is disabled while a cell is loaded: close the cell and re-run this probe'
-    exit 2
+# File/Data is greyed out while the render window holds a cell, so a loaded cell is closed here and
+# restored at the end. `status.loaded` is not the test: it reads the TES placement, which stays after a close.
+$closedCell = $null
+$held = (Invoke-Plugin 'cell') | ConvertFrom-Json
+# The cell closes before the run and must come back even when the run stops early, so it has one path.
+function Restore-Cell {
+    if (-not $script:closedCell -or -not $script:closedCell.editorId) { return }
+    $restored = Invoke-Mcp 'ck.cell_load' ('{"name":"' + $script:closedCell.editorId + '"}')
+    $script:observed['cellRestored'] = [ordered]@{ cell = $script:closedCell.editorId; status = $restored.status; code = $restored.code }
+    if ("$($restored.status)" -ne 'ok') {
+        $script:failures.Add("the cell '$($script:closedCell.editorId)' was closed to open File/Data and did not come back ($($restored.code) $($restored.message))")
+    }
+}
+
+if ($Command -match '^File/Data' -and $held.loaded) {
+    $closed = (Invoke-Plugin 'ui.cellclose') | ConvertFrom-Json
+    $closedCell = [ordered]@{ editorId = $held.editorId; formId = $held.formId; closed = $closed.closed; was = $closed.was }
+    $observed['closedCell'] = $closedCell
+    if ("$($closed.closed)" -ne 'True') {
+        Write-Output "REPRODUCTION the cell '$($held.editorId)' could not be closed, so File/Data stays disabled"
+        exit 2
+    }
+
+
+    # A write that does not reach the render window leaves the menu greyed, so the freed state is read back.
+    Start-Sleep -Milliseconds 700
+    $freed = (Invoke-Plugin 'cell') | ConvertFrom-Json
+    $closedCell['loadedAfterClose'] = $freed.loaded
+    if ($freed.loaded) {
+        Restore-Cell
+        Write-Output 'REPRODUCTION the render window still holds a cell after ui.cellclose'
+        exit 2
+    }
 }
 
 # 1. Create the dialog while the editor is in the background, and require it to be hidden.
@@ -395,6 +424,9 @@ if ($KeepModal) {
         if ($refused) { Close-Modal $refused | Out-Null }
     }
 }
+
+# The cell this probe closed has to come back, or the rest of the session runs against an empty render window.
+Restore-Cell
 
 $evidenceJson = [ordered]@{ modal = $observed; failures = @($failures); passed = ($failures.Count -eq 0) } | ConvertTo-Json -Depth 6
 if ($Evidence) { $evidenceJson | Set-Content -LiteralPath $Evidence -Encoding utf8 }
