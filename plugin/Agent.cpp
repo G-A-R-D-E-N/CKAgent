@@ -888,10 +888,11 @@ namespace ckagent
 
 			while (g_running.load())
 			{
+				SECURITY_ATTRIBUTES security = PipeSecurity();
 				HANDLE pipe = CreateNamedPipeW(kPipeName,
 					PIPE_ACCESS_DUPLEX,
 					PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-					1, 64 * 1024, 64 * 1024, 0, nullptr);
+					1, 64 * 1024, 64 * 1024, 0, &security);
 
 				if (pipe == INVALID_HANDLE_VALUE)
 				{

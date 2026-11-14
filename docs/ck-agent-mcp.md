@@ -257,11 +257,15 @@ and connects; so does `dotnet ckagent.dll`, whose host lives in `C:\Program File
 does not inspect clients, and signing is not the factor — a signed copy inside the workspace is refused
 the same way. Register the server with `command: dotnet`, `args: [<build>\ckagent.dll, --game, ...]`.
 
-The error says which side is low, because the fix depends on it: `pipe_denied` reads the client's own token
-and reports its integrity level, so a low-integrity client is told it is low and that `dotnet ckagent.dll`
-starts at medium, while a medium client is told the pipe belongs to another user or a higher-integrity
-process. Measured: `ckagent.exe` from the workspace reports `low integrity`, and the same call through
-`dotnet ckagent.dll` succeeds.
+The plugin label is why the apphost works anyway: its pipe carries a low mandatory label
+(`D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;LW)`), so a client at low integrity can still write to
+it. Before that label, `ckagent.exe` from the workspace was refused while `dotnet ckagent.dll` connected —
+both measured. A client cannot raise itself instead: a low process may not write a medium-labelled file, so
+copying the build somewhere else and relaunching fails by design.
+
+When a denial does happen, `pipe_denied` reads the client's own token and names its level, because that
+decides the cause: at low it means the loaded plugin predates the low-labelled pipe or the pipe belongs to
+another user; at medium it means the pipe belongs to another account or a higher-integrity process.
 
 Tool naming, namespaced so it does not collide with the existing `fo4editor` server:
 

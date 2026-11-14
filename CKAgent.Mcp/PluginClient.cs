@@ -107,10 +107,12 @@ public sealed class PluginClient
         if (level == null)
             return text + "; compare the account, the session and the integrity level of the editor process";
 
+        // Constraint: a low client only reaches a pipe the plugin labelled low, so name the plugin as the cause.
         if (level == "low")
             return text + "; this client runs at low integrity, and a low-integrity process cannot attach to a " +
-                "pipe opened by a higher one - run the server through a medium-integrity host instead, for " +
-                "example 'dotnet ckagent.dll', whose C:\\Program Files\\dotnet host starts at medium";
+                "pipe opened by a higher one unless that pipe is labelled low - so the loaded CKAgent plugin " +
+                "predates the low-labelled pipe, or the pipe belongs to another user; a medium-integrity host " +
+                "such as 'dotnet ckagent.dll' connects either way";
 
         return text + $"; this client runs at {level} integrity, so the pipe belongs to another user or to a " +
             "higher-integrity process - compare the account and session running the editor";

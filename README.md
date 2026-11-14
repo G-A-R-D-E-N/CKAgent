@@ -190,13 +190,16 @@ dotnet publish CKAgent/CKAgent.Mcp/CKAgent.Mcp.csproj -c Release -r win-x64 --se
 }
 ```
 
-Start it through `dotnet`, not `ckagent.exe`, if you hit `pipe_denied`: a process started from a sandboxed
-workspace directory inherits a low-integrity token, and Windows refuses that token access to the
-medium-integrity pipe. `dotnet` runs at medium integrity, so the DLL host connects. This was measured on
-this host, not assumed — the same binary launched from a folder outside the sandbox connects fine.
+Either launch works: `ckagent.exe` and `dotnet ckagent.dll` both connect. A sandboxed workspace hands
+`ckagent.exe` a low-integrity token, which Windows would refuse to write to a medium pipe, so the plugin
+labels its pipe low (`S:(ML;;NW;;;LW)`) — that is what lets the apphost in, and it was measured here, not
+assumed.
 
-The error names which side is low: `pipe_denied` reads the client's own token, says `low integrity` when
-that is what it finds, and points at `dotnet ckagent.dll` as the host that starts at medium.
+The trade-off is deliberate: any process at the editor user's low integrity can then drive the editor. If
+that is too much, run the server through `dotnet` and drop the label from `PipeSecurity` in `Protocol.h`.
+
+A denial still explains itself: `pipe_denied` reads the client's own token, reports its level, and names
+the likely cause — a plugin older than the low-labelled pipe, or a pipe held by another account.
 
 Working files — the command manifest, save backups, job logs — live in `%LOCALAPPDATA%\ckagent` and survive
 a server restart. A job left `running` is reported `interrupted` rather than silently forgotten.
