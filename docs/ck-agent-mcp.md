@@ -454,6 +454,35 @@ Two things that follow from this. Exterior cells share the editorId `Wilderness`
 loading a cell does not switch it, and nothing in the reply says which worldspace a name was resolved
 against, so switch deliberately and check `ck.cell`'s `interior`/grid afterwards.
 
+### Picking a cell by coordinates, measured
+
+A row index is a poor handle for an exterior cell: the list refills under every worldspace switch and when the
+editor loads cells on its own, so an index saved from an earlier run points at something else. The Cell View's
+`Coords` column is the grid position, and that is stable.
+
+| Column | Value for the cells used here |
+|---|---|
+| headers | `EditorID`, `FormID`, `Name`, `Loaded`, `Coords`, `Location`, `Owner`, `Last Combined` |
+| `Coords` | `-1, -1` for `DiamondCityEntrance`, `0, 0` for `DiamondCityOrigin`, `2, 1` for `DiamondCityOutfield01` |
+| `ck.cell` after the load | `gridX`, `gridY`, `interior` — `0, 0` and `2, 1` for those two |
+
+An exterior cell is 4096 units across, so a world position becomes a grid position by flooring:
+`gridX = floor(x / 4096)`, `gridY = floor(y / 4096)`, and a negative component floors away from zero. To pick a
+cell by where it is rather than by where it sits in a list:
+
+1. read the list — `ui.items <cell list hwnd> <count> 0`, the list being the `SysListView32` under the Cell
+   View pane that carries those eight headers;
+2. take each row's `Coords` cell (fifth column) and compare it with the grid from the coordinates;
+3. open that row — `ui.notify <list hwnd> dblclk <row>`;
+4. confirm with `ck.cell`, which reports `gridX`/`gridY` and `editorId` for what the render window now holds.
+
+Measured on one pass: the list held `2, 1` at row `3`, `ui.notify 0x362B12 dblclk 3` opened
+`DiamondCityOutfield01` with `gridX 2, gridY 1`, and a reference in that cell — `BillboardMed04JoeSpuckies` —
+sits at `9584.1836, 5252.5830, -190.0202`, which floors to `2, 1`. The same arithmetic gave `0, 0` for
+`DiamondCityOrigin` and `-1, -1` for `DiamondCityEntrance`. Where a cell does have its own EditorID, the name
+route above is shorter; coordinates are what is left when the name is `Wilderness` and shared, or when the
+position is what you were given.
+
 One more thing the same run showed: selecting the entry that is *already* showing does not refill the cell
 list, so a stale list keeps refusing names that the combo looks ready for. `ui.select <combo> 0` and then
 `ui.select <combo> 3` refills it, after which `ui.cellload DiamondCityOrigin` answers
