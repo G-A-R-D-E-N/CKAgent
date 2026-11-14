@@ -344,6 +344,11 @@ exits 3 on the opt-in half, which is the open transport bug written down where i
 exe and asserts the text carries the Win32 error, this client's level and both switches, and does not blame a
 stale plugin, then records what the same call answers with `--allow-low-pipe`.
 
+`tools/cell-not-loaded-probe.ps1` covers the branch that catches a load the editor ignores. The plugin matches a
+name against every pane, so the probe asks for one that only the Object Window lists: the row is accepted, the
+double-click does nothing, and `cell_not_loaded` has to name the cell that stayed. It also loads that cell for
+real afterwards, so a tool that returned `cell_not_loaded` for everything could not pass it.
+
 `tools/cell-probe.ps1` covers the naming contract. It picks cells from the Cell View's own list, opens each
 with `ui.cellload`, and asserts `ck.cell` names the cell that was opened: `editorId` equal to the row,
 `formId` equal to the row's form id, the placement fields present, grid `0, 0` for an interior cell, a
