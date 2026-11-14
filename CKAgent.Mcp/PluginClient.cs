@@ -23,8 +23,7 @@ public sealed class PluginClient
         {
             try
             {
-                using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.None);
-                pipe.Connect(1500);
+                using NamedPipeClientStream pipe = ConnectWithRetry();
 
                 using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, leaveOpen: true);
                 using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true)
@@ -52,8 +51,8 @@ public sealed class PluginClient
                     return false;
                 }
 
-                // Reply must be RPLY <seq> OK <json> or RPLY <seq> ERR <code> <message>.
-                string[] parts = reply.Split(' ', 5, StringSplitOptions.None);
+                // Constraint: a payload is one JSON value that may contain spaces, so only the prefix may be split.
+                string[] parts = reply.Split(' ', 4, StringSplitOptions.None);
                 if (parts.Length < 4 || parts[0] != "RPLY")
                 {
                     code = "malformed_reply";
@@ -63,12 +62,13 @@ public sealed class PluginClient
 
                 if (parts[2] == "ERR")
                 {
-                    code = parts[3];
-                    message = parts.Length > 4 ? parts[4] : code;
+                    string[] error = parts[3].Split(' ', 2, StringSplitOptions.None);
+                    code = error[0];
+                    message = error.Length > 1 ? error[1] : code;
                     return false;
                 }
 
-                payload = parts.Length > 4 ? parts[4] : "";
+                payload = parts[3];
                 return true;
             }
             catch (TimeoutException)
@@ -84,7 +84,42 @@ public sealed class PluginClient
                 message = exception.Message;
                 return false;
             }
+            catch (UnauthorizedAccessException exception)
+            {
+                code = "pipe_denied";
+                message = $"the pipe refused the connection: {exception.Message} (0x{exception.HResult:X8})";
+                return false;
+            }
+            catch (Exception exception)
+            {
+                code = "pipe_error";
+                message = $"{exception.GetType().Name}: {exception.Message}";
+                return false;
+            }
         }
+    }
+
+    // Constraint: the plugin rebuilds its pipe after every client, so a connect must retry before it fails.
+    private static NamedPipeClientStream ConnectWithRetry()
+    {
+        Exception? last = null;
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            var candidate = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.None);
+            try
+            {
+                candidate.Connect(3000);
+                return candidate;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or TimeoutException)
+            {
+                last = exception;
+                candidate.Dispose();
+                Thread.Sleep(200);
+            }
+        }
+
+        throw last!;
     }
 
     /// <summary>Convenience for the camera tool; formats with invariant culture so decimals are configurable-friendly.</summary>
