@@ -454,6 +454,12 @@ Two things that follow from this. Exterior cells share the editorId `Wilderness`
 loading a cell does not switch it, and nothing in the reply says which worldspace a name was resolved
 against, so switch deliberately and check `ck.cell`'s `interior`/grid afterwards.
 
+One more thing the same run showed: selecting the entry that is *already* showing does not refill the cell
+list, so a stale list keeps refusing names that the combo looks ready for. `ui.select <combo> 0` and then
+`ui.select <combo> 3` refills it, after which `ui.cellload DiamondCityOrigin` answers
+`{"cell":"diamondcityorigin","via":"list"}`. `tools/aim-probe.ps1` steps the combo away and back for
+that reason, and retries the load, so a run that follows another one does not inherit the previous list.
+
 ## Camera transform, measured (editor 1.11.246.0, cell open)
 
 `tools/ck-surface-probe/camera-pose-probe.ps1` reads the `NiCamera` behind
@@ -583,10 +589,17 @@ height above the centre and the flat part, both of which are fixed by a 30° til
 
 A bulb whose centre sits at `212.6` and a stadium stand at `742.0` give the same fractions at a standoff of
 `62` and one of `7219`, so the tilt depends on the distance asked for and on nothing left over from an
-earlier pose or an absolute height. The probe frames twice on the same reference, at the fitted distance
-and at three times it, and asserts `0.5` and `cos 30°` on both, which is the only reading that would notice
-a tilt taken from the other standoff. A second frame needs `cell` named again once the camera has left the
-cell it was framing in — `frame` moved the camera, and the editor follows the camera.
+earlier pose or an absolute height. The probe frames twice on the same reference — at the fitted distance
+and at half of it — and asserts `0.5` and `cos 30°` on both, which is the only reading that would notice a
+tilt taken from the other standoff.
+
+The second frame asks for a *nearer* standoff rather than a wider one because the reference is looked up in
+whatever cell the camera stands in, and a frame far enough back leaves the cell it was framing: `frame
+DiamondStandsMayor01` at its fitted `7219` centres the stand, while a second frame at `21657` in the same
+cell is refused with `ref_not_found` against `ProceduralWater`, since the camera had moved out into the
+worldspace and the cell under it holds two references. Naming `cell` on the request does not rescue that
+case: the load happens first, and the lookup then follows the moved camera. Half the fitted distance stays
+inside the cell, so it still varies the distance the tilt is taken from.
 
 Framing also fits the lens to the box, because a standoff that clears the object still clips it if the near
 plane sits further out. `ck.frame` writes the near plane at `distance - 1.5 × radius` (floored at `1`) and
@@ -696,6 +709,14 @@ the call was met, so it follows `yawAim` when `level` is set and `aim` otherwise
 | `-300` below it | `aim Loot_Prewar_Safe level` | `0` | `0` | `0.8628` | `1` | `true` |
 | level with it | `aim Loot_Prewar_Safe level` | `0` | `0` | `1` | `1` | `true` |
 | `200` up, `300, -200` off | `aim Loot_Prewar_Safe 256 level` | `0` | `0` | `0.788` | `1` | `true` |
+
+`tools/tilt-compare.ps1` runs the whole aim probe in an interior cell (`AndrewStation01`, `Loot_Prewar_Safe`)
+and in an exterior worldspace (`DiamondCity` / `DiamondCityOrigin`, `DiamondStandsMayor01`), switching the Cell
+View's worldspace entry before the load, and writes one evidence file holding both probes' readings plus a
+`comparison` list that sets the tilted and level answer for each height beside each other. The two kinds of
+world are reached differently, so they were previously measured in separate runs and compared by eye; the file
+fails if a world cannot be prepared, if `level` writes a pitch other than `0` in either, or if the off-height
+cases still report a centred target.
 
 The `aim` in each row is the cosine of the target's elevation — `512/√(512² 300²) = 0.8628` and
 `256/√(256² 200²) = 0.788` — which is what the probe compares it against, so a reply that claimed a centre it

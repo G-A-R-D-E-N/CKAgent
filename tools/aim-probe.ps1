@@ -157,37 +157,59 @@ function Get-LoadedCell {
 }
 
 # The Cell View lists one collection at a time, so a name only resolves once the matching entry is selected.
+# Its combo is rebuilt while a worldspace is being shown, so both the entry and the rows behind it are retried.
 function Select-CellViewCollection([string]$name) {
-    $pane = @((Invoke-Plugin 'ui.windows') | ConvertFrom-Json) | Where-Object { $_.title -eq 'Cell View' } | Select-Object -First 1
-    if (-not $pane) { return $false }
+    $deadline = (Get-Date).AddSeconds(20)
+    while ((Get-Date) -lt $deadline) {
+        # The window list has to be a variable first: an array piped straight into Where-Object passes as one
+        # item, and every property read then returns an array, so the title filter matches nothing.
+        $windows = (Invoke-Plugin 'ui.windows') | ConvertFrom-Json
+        $pane = @($windows) | Where-Object { $_.title -eq 'Cell View' } | Select-Object -First 1
+        if ($pane) {
+            $tree = (Invoke-Plugin "ui.tree $($pane.hwnd) 3 40") | ConvertFrom-Json
+            $combo = @($tree.children) | Where-Object { $_.class -eq 'ComboBox' } | Select-Object -First 1
+            if ($combo -and $combo.items) {
+                $rows = @($combo.items.rows)
+                for ($i = 0; $i -lt $rows.Count; $i++) {
+                    if ("$($rows[$i])".Trim() -eq $name) {
+                        # Constraint: selecting the entry already showing leaves the list stale, and a stale list
+                        # refuses the cell name, so the combo is stepped through another entry and back.
+                        $away = if ($i -eq 0) { 1 } else { 0 }
+                        if ($away -lt $rows.Count) {
+                            try { Invoke-Plugin "ui.select $($combo.hwnd) $away" | Out-Null } catch { }
+                            Start-Sleep -Milliseconds 1200
+                        }
 
-    $tree = (Invoke-Plugin "ui.tree $($pane.hwnd) 3 40") | ConvertFrom-Json
-    $combo = @($tree.children) | Where-Object { $_.class -eq 'ComboBox' } | Select-Object -First 1
-    if (-not $combo -or -not $combo.items) { return $false }
-
-    $rows = @($combo.items.rows)
-    for ($i = 0; $i -lt $rows.Count; $i++) {
-        if ("$($rows[$i])".Trim() -eq $name) {
-            Invoke-Plugin "ui.select $($combo.hwnd) $i" | Out-Null
-            # The list repopulates behind the combo, and the cell name only resolves once it has.
-            Start-Sleep -Milliseconds 2000
-            return $true
+                        Invoke-Plugin "ui.select $($combo.hwnd) $i" | Out-Null
+                        Start-Sleep -Milliseconds 2500
+                        return $true
+                    }
+                }
+            }
         }
+
+        Start-Sleep -Milliseconds 500
     }
 
     return $false
 }
 
+# A load is refused rather than queued while the list behind a fresh worldspace is still filling, so it is
+# retried for as long as a big worldspace can take to list its cells.
 function Open-Cell([string]$name) {
-    try {
-        Invoke-Plugin "ui.cellload $name" | Out-Null
-    } catch {
-        return $false
+    for ($try = 0; $try -lt 3; $try++) {
+        try {
+            Invoke-Plugin "ui.cellload $name" | Out-Null
+        } catch {
+        }
+
+        $deadline = (Get-Date).AddSeconds(12)
+        while ((Get-Date) -lt $deadline -and (Get-LoadedCell) -ne $name) { Start-Sleep -Milliseconds 400 }
+        if ((Get-LoadedCell) -eq $name) { return $true }
+        Start-Sleep -Milliseconds 1500
     }
 
-    $deadline = (Get-Date).AddSeconds(25)
-    while ((Get-Date) -lt $deadline -and (Get-LoadedCell) -ne $name) { Start-Sleep -Milliseconds 400 }
-    return ((Get-LoadedCell) -eq $name)
+    return $false
 }
 
 $loaded = Get-LoadedCell
@@ -601,12 +623,16 @@ if ($chainTargets.Count -lt 2) {
 # distance asked for - a half and cos 30 - rather than something only the reply knows.
 $frameChecks = @(
     @{ name = 'frame-fit';   distance = $null },
-    @{ name = 'frame-wider'; distance = 'triple' }
+    @{ name = 'frame-half';  distance = 'half' }
 )
 $fitted = 0.0
 foreach ($check in $frameChecks) {
-    $request = @{ reference = $Reference; yaw = 1.5 }
-    if ("$($check.distance)" -eq 'triple') { $request['distance'] = [math]::Round($fitted * 3, 2) }
+    # Constraint: a frame moves the camera out of the cell when it stands far enough back, so the cell is named
+    # on every frame call; ck.frame skips the load while it is still the one open.
+    $request = @{ reference = $Reference; yaw = 1.5; cell = $Cell }
+    # Constraint: a closer standoff, not a wider one, because a frame far enough back leaves the cell and a
+    # reference is then looked up in whatever cell the camera moved into.
+    if ("$($check.distance)" -eq 'half') { $request['distance'] = [math]::Round($fitted * 0.5, 2) }
 
     $framed = Invoke-Mcp 'ck.frame' ($request | ConvertTo-Json -Compress)
     $record = [ordered]@{ name = $check.name; request = $request.reference; asked = $request['distance']; status = $framed.status; code = $framed.code }

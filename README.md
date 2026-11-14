@@ -290,15 +290,23 @@ old one, and its sign must follow which side the camera stands on, since a tilt 
 backwards still points at the sky. Four further cases ask for `level`, where the pitch must be written as `0`,
 the re-read view row must come back flat, the heading must still reach the target, and the reported `aim` must
 fall to the cosine of the target's elevation rather than claiming a centre it never took. Another aims at two
-references in a single call, which
-must turn to each in order and finish on the last. The frame cases pose the camera with `ck.frame` and check
+references in a single call, which must turn to each in order and finish on the last. The frame cases pose the camera with `ck.frame` and check
 its centring the same way — `aim` `1`, `aligned`, the camera exactly the reported `distance` from the box
 centre, and the re-read view row dotting that centre — because framing reports an aim too, and it is the box
 centre rather than the reference's position that gets centred. They run twice, at the fitted distance and at
-three times it, and also assert the tilt's own geometry: the camera must stand half the distance above the
-centre and `cos 30°` of it away flat, which is what a tilt taken from the wrong standoff would move while
-`aim` stayed at `1`. The probe loads the cell itself when needed, selecting the Cell View's `Interiors` entry
+half of it — a nearer standoff, because a frame far enough back leaves the cell and the reference is then
+looked up in whatever cell the camera moved into — and also assert the tilt's own geometry: the camera must
+stand half the distance above the centre and `cos 30°` of it away flat, which is what a tilt taken from the
+wrong standoff would move while `aim` stayed at `1`. The probe loads the cell itself when needed, selecting the Cell View's `Interiors` entry
 when a previous run left another collection showing; exit 2 means the cell or the reference was not found.
+
+`tools/tilt-compare.ps1` runs that probe twice — once in an interior cell, once in an exterior worldspace,
+switching the Cell View's worldspace entry before the load — and writes both readings into one evidence file
+with a `comparison` list that puts the tilted and level result of each height side by side. The two kinds of
+world are reached differently, so they used to be measured in separate runs and compared by hand; the file now
+fails if either world refuses to prepare, if `level` writes a pitch other than `0` in either, or if the off-height
+cases still report a centred target, so the tilt is shown to follow the camera and the target rather than the
+cell.
 
 `tools/cell-probe.ps1` covers the naming contract. It picks cells from the Cell View's own list, opens each
 with `ui.cellload`, and asserts `ck.cell` names the cell that was opened: `editorId` equal to the row,
