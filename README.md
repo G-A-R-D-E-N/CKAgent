@@ -237,6 +237,14 @@ must be one the plugin actually emits. Four more drift steps move the offset, re
 `editor_id`, hard-code the offset instead of using the constant, and weaken the probe's key list — each one
 must fail the gate.
 
+`main` requires that check. `tools/branch-protection.json` is the protection as applied — the `layout` check
+required, force pushes and deletions refused, administrators not enforced — and it can be re-applied with
+`gh api -X PUT repos/G-A-R-D-E-N/CKAgent/branches/main/protection --input tools/branch-protection.json`. The
+gate cannot pass today: every run since the workflow was added reports *The job was not started because an
+Actions budget is preventing further use*, so a pull request into `main` stays blocked until the
+organisation's Actions minutes or spending limit are raised. Direct pushes to `main` are unaffected,
+because the protection does not require a pull request.
+
 `tools/blocked-modal-probe.ps1` covers the part that cannot run on a runner: it needs a live editor. It
 opens `File/Data` while the editor is in the background so the dialog is created hidden, asserts `status`
 names it, then makes a call that must fail (`ck.frame` with no cell loaded) and asserts no blocking dialog
