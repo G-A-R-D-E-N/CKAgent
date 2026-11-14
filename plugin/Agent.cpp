@@ -362,11 +362,31 @@ namespace ckagent
 			// Constraint: the scene camera is a slave, because the editor copies the camera object's node
 			// into it every frame, so a write must go to the camera object and the slave proves it took.
 			auto* camera = reinterpret_cast<CameraApi*>(g_camera);
+			auto* node = camera->GetNode();
+			const auto* worldTranslate = node ? reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraTranslate) : nullptr;
+			const auto* worldRotate = node ? reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraWorld) : nullptr;
+
 			const NiPoint3 before = camera->GetPosition();
+			float beforeWorld[3] = { 0, 0, 0 };
+			if (worldTranslate) { beforeWorld[0] = worldTranslate[0]; beforeWorld[1] = worldTranslate[1]; beforeWorld[2] = worldTranslate[2]; }
 
 			float x = 0, y = 0, z = 0, yaw = 0, pitch = 0;
 			const bool oriented = std::sscanf(args.c_str(), "set %f %f %f %f %f", &x, &y, &z, &yaw, &pitch) == 5;
 			const bool moved = oriented || std::sscanf(args.c_str(), "set %f %f %f", &x, &y, &z) == 3;
+
+			// Ground truth: MoveLocal must define the camera axes, so a forward direction is measured, not assumed.
+			float mx = 0, my = 0, mz = 0;
+			const bool stepped = std::sscanf(args.c_str(), "move %f %f %f", &mx, &my, &mz) == 3;
+
+			// LookAt is the editor's own idea of where the camera points, so it must settle the forward axis.
+			float lx = 0, ly = 0, lz = 0;
+			const bool looking = std::sscanf(args.c_str(), "lookat %f %f %f", &lx, &ly, &lz) == 3;
+
+			if (stepped)
+				camera->MoveLocal(mx, my, mz);
+
+			if (looking)
+				camera->LookAt(NiPoint3{ lx, ly, lz });
 
 			if (moved)
 			{
@@ -393,11 +413,13 @@ namespace ckagent
 			const auto* sceneRotate = reinterpret_cast<const float*>(niCamera + kNiCameraWorld);
 			const float scale = *reinterpret_cast<const float*>(niCamera + kNiCameraScale);
 
-			// The node's world transform must be compared, not its local one: a rotated parent
-			// means a local pose must not be compared against the scene camera.
-			auto* node = camera->GetNode();
-			const auto* worldTranslate = node ? reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraTranslate) : nullptr;
-			const auto* worldRotate = node ? reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraWorld) : nullptr;
+			float stepDelta[3] = { 0, 0, 0 };
+			if (stepped && worldTranslate)
+			{
+				stepDelta[0] = worldTranslate[0] - beforeWorld[0];
+				stepDelta[1] = worldTranslate[1] - beforeWorld[1];
+				stepDelta[2] = worldTranslate[2] - beforeWorld[2];
+			}
 
 			// A pose must be verified as a whole: position alone would pass while the orientation stayed stale.
 			const double drift = worldTranslate
@@ -419,7 +441,8 @@ namespace ckagent
 				"{\"camera\":\"0x%llX\",\"sceneCamera\":\"0x%llX\","
 				"\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"wasX\":%.4f,\"wasY\":%.4f,\"wasZ\":%.4f,"
 				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"scale\":%.4f,"
-				"\"scene\":[%.4f,%.4f,%.4f],\"rotationOffset\":%.4f,\"positionSynced\":%s,\"moved\":%s,"
+				"\"scene\":[%.4f,%.4f,%.4f],\"rotationOffset\":%.4f,\"positionSynced\":%s,"
+				"\"step\":[%.4f,%.4f,%.4f],\"moved\":%s,"
 				"\"window\":\"0x%llX\",\"resolvedAt\":\"%s\"}",
 				static_cast<unsigned long long>(g_camera),
 				static_cast<unsigned long long>(niCamera),
@@ -433,6 +456,7 @@ namespace ckagent
 				scale,
 				sceneTranslate[0], sceneTranslate[1], sceneTranslate[2], rotationDrift,
 				synced ? "true" : "false",
+				stepDelta[0], stepDelta[1], stepDelta[2],
 				moved ? "true" : "false",
 				static_cast<unsigned long long>(g_renderWindow),
 				g_cameraWhen);
