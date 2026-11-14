@@ -257,6 +257,12 @@ and connects; so does `dotnet ckagent.dll`, whose host lives in `C:\Program File
 does not inspect clients, and signing is not the factor — a signed copy inside the workspace is refused
 the same way. Register the server with `command: dotnet`, `args: [<build>\ckagent.dll, --game, ...]`.
 
+The error says which side is low, because the fix depends on it: `pipe_denied` reads the client's own token
+and reports its integrity level, so a low-integrity client is told it is low and that `dotnet ckagent.dll`
+starts at medium, while a medium client is told the pipe belongs to another user or a higher-integrity
+process. Measured: `ckagent.exe` from the workspace reports `low integrity`, and the same call through
+`dotnet ckagent.dll` succeeds.
+
 Tool naming, namespaced so it does not collide with the existing `fo4editor` server:
 
 | Tool | Surface | What it does |

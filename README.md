@@ -195,6 +195,9 @@ workspace directory inherits a low-integrity token, and Windows refuses that tok
 medium-integrity pipe. `dotnet` runs at medium integrity, so the DLL host connects. This was measured on
 this host, not assumed — the same binary launched from a folder outside the sandbox connects fine.
 
+The error names which side is low: `pipe_denied` reads the client's own token, says `low integrity` when
+that is what it finds, and points at `dotnet ckagent.dll` as the host that starts at medium.
+
 Working files — the command manifest, save backups, job logs — live in `%LOCALAPPDATA%\ckagent` and survive
 a server restart. A job left `running` is reported `interrupted` rather than silently forgotten.
 

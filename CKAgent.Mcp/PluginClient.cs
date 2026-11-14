@@ -87,7 +87,7 @@ public sealed class PluginClient
             catch (UnauthorizedAccessException exception)
             {
                 code = "pipe_denied";
-                message = $"the pipe refused the connection: {exception.Message} (0x{exception.HResult:X8})";
+                message = DeniedMessage(exception, WindowsIntegrity.LevelName());
                 return false;
             }
             catch (Exception exception)
@@ -97,6 +97,23 @@ public sealed class PluginClient
                 return false;
             }
         }
+    }
+
+    // Constraint: the refused message must name the integrity level, because that decides which side to fix.
+    internal static string DeniedMessage(Exception exception, string? level)
+    {
+        string text = $"the pipe refused the connection: {exception.Message} (0x{exception.HResult:X8})";
+
+        if (level == null)
+            return text + "; compare the account, the session and the integrity level of the editor process";
+
+        if (level == "low")
+            return text + "; this client runs at low integrity, and a low-integrity process cannot attach to a " +
+                "pipe opened by a higher one - run the server through a medium-integrity host instead, for " +
+                "example 'dotnet ckagent.dll', whose C:\\Program Files\\dotnet host starts at medium";
+
+        return text + $"; this client runs at {level} integrity, so the pipe belongs to another user or to a " +
+            "higher-integrity process - compare the account and session running the editor";
     }
 
     // Constraint: the plugin rebuilds its pipe after every client, so a connect must retry before it fails.
