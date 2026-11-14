@@ -287,34 +287,50 @@ public sealed class CameraTools
 
         if (!string.IsNullOrWhiteSpace(cell))
         {
+            // Constraint: an already loaded cell would satisfy the wait for another one, so the handle must change.
+            string? before = CurrentCellHandle();
+
             if (!_plugin.TryCall($"ui.cellload {cell.Trim()}", out string opened, out string openCode, out string openMessage))
                 return new CameraResult("error", openCode, openMessage, opened);
 
-            // The editor loads asynchronously, so framing must wait until the cell reports itself loaded.
             bool loaded = false;
             for (int attempt = 0; attempt < 60 && !loaded; attempt++)
             {
-                if (_plugin.TryCall("cell", out string state, out _, out _) && state.Contains("\"loaded\":true"))
-                    loaded = true;
-                else
-                    Thread.Sleep(250);
+                string? now = CurrentCellHandle();
+                loaded = now != null && now != before;
+                if (!loaded) Thread.Sleep(250);
             }
 
             if (!loaded)
             {
                 return new CameraResult("error", "cell_not_loaded",
-                    $"the editor did not report {cell} as loaded within 15 s", null);
+                    $"the editor did not report a new cell for {cell} within 15 s", null);
             }
         }
 
+        // A yaw without a distance must still frame at the default standoff rather than at zero.
+        if (yaw != null && distance == null) distance = 256;
+
         string command = $"frame {reference.Trim()}";
         if (distance != null) command += " " + PluginClient.Format(distance.Value);
-        if (yaw != null) command += (distance == null ? " 0 " : " ") + PluginClient.Format(yaw.Value);
+        if (yaw != null) command += " " + PluginClient.Format(yaw.Value);
 
         if (!_plugin.TryCall(command, out string payload, out string code, out string message))
             return new CameraResult("error", code, message, null);
 
         return new CameraResult("ok", "ok", command, payload);
+    }
+
+    private string? CurrentCellHandle()
+    {
+        if (!_plugin.TryCall("cell", out string payload, out _, out _)) return null;
+
+        const string marker = "\"cell\":\"";
+        int at = payload.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0) return null;
+        at += marker.Length;
+        int end = payload.IndexOf('"', at);
+        return end < 0 ? null : payload.Substring(at, end - at);
     }
 
     [McpServerTool(Name = "ck.camera"),

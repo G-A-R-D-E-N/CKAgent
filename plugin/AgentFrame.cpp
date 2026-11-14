@@ -45,6 +45,19 @@ namespace ckagent
 			return words;
 		}
 
+		// Invariant: a pointer read out of the render window must be readable before it is dereferenced.
+		bool Readable(const void* address, std::size_t bytes)
+		{
+			MEMORY_BASIC_INFORMATION info{};
+			if (!address || VirtualQuery(address, &info, sizeof info) == 0) return false;
+			if (info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) return false;
+
+			const auto start = reinterpret_cast<std::uintptr_t>(address);
+			const auto end = start + bytes;
+			const auto regionEnd = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
+			return end >= start && end <= regionEnd;
+		}
+
 		std::string Lower(std::string value)
 		{
 			for (auto& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -68,6 +81,14 @@ namespace ckagent
 		{
 			errorCode = "no_cell";
 			errorMessage = "no cell is loaded; load one before framing";
+			return false;
+		}
+
+		// Constraint: a cell mid-load can leave a stale pointer, and a bad read here would crash the editor.
+		if (!Readable(cell, 0x180))
+		{
+			errorCode = "cell_unreadable";
+			errorMessage = "the loaded cell is not readable yet; retry once the load settles";
 			return false;
 		}
 
@@ -102,6 +123,14 @@ namespace ckagent
 		int matches = 0;
 		const std::uint32_t count = cell->GetItemCount();
 		EditorRef** items = cell->GetItems();
+
+		// Invariant: the item array must be readable for every count claimed, or the loop reads freed memory.
+		if (count > 200000 || (count != 0 && (!items || !Readable(items, static_cast<std::size_t>(count) * sizeof(void*)))))
+		{
+			errorCode = "cell_unreadable";
+			errorMessage = "the loaded cell reports " + std::to_string(count) + " references that are not readable";
+			return false;
+		}
 		for (std::uint32_t i = 0; items && i < count; ++i)
 		{
 			auto* refr = items[i];
