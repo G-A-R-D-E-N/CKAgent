@@ -127,8 +127,10 @@ Everything above was measured against a live editor, not read off the SDK:
 
 1. Install CKPE for CreationKit 1.11.246.0 and drop `CKAgent.dll` into `<game>\CKPEPlugins\`.
 2. Launch the editor through `ckpe_loader.exe`.
-3. Start the MCP server: `dotnet CKAgent.Mcp.dll` (the unsigned `ckagent.exe` apphost can be refused by the
-   plugin pipe; the DLL always works).
+3. Start the MCP server: `dotnet CKAgent.Mcp.dll`. Running `ckagent.exe` directly can fail with
+   `pipe_denied`: a process started from a sandboxed workspace directory inherits a low-integrity token,
+   and Windows refuses that token access to the medium-integrity pipe. `dotnet` itself runs at medium
+   integrity, so the DLL host always connects.
 
 Working files — the command manifest, save backups, job logs — live in `%LOCALAPPDATA%\ckagent` and survive
 a server restart. A job left `running` is reported `interrupted` rather than silently forgotten.
