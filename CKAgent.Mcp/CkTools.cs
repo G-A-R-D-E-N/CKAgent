@@ -271,10 +271,14 @@ public sealed class CameraTools
     public CameraTools(PluginClient plugin) => _plugin = plugin;
 
     [McpServerTool(Name = "ck.camera"),
-     Description("Read or set the render window camera through the CKAgent plugin: mode=Get returns " +
-                 "the scene camera's position, rotation matrix and scale; mode=Set with x/y/z (and " +
-                 "optionally yaw/pitch) moves it. Needs a loaded cell and reports " +
-                 "camera_transform_unverified when the scene camera has no usable transform yet. " +
+     Description("Drive the render window camera through the CKAgent plugin. mode=Get returns the " +
+                 "scene camera's position, rotation matrix and scale; mode=Set places it at x/y/z with " +
+                 "optional yaw/pitch (radians, +pitch tilts up); mode=Move steps by x/y/z in the camera's " +
+                 "own axes, so +y is its right and not world +Y; mode=Lookat forwards x/y/z to the " +
+                 "editor's LookAt, which changes the orientation but was measured not to point at that " +
+                 "point, so prefer mode=Set for a known view. Every mode returns the resulting position " +
+                 "and matrix. Needs a loaded cell and reports camera_transform_unverified when the scene " +
+                 "camera has no usable transform yet. " +
                  "Requires CKPE plus CKAgent.dll in <game>\\CKPEPlugins\\.")]
     public CameraResult Camera(string mode = "get", double? x = null, double? y = null, double? z = null,
                                double? yaw = null, double? pitch = null)
@@ -305,6 +309,42 @@ public sealed class CameraTools
                       $"{PluginClient.Format(yaw.Value)} {PluginClient.Format(pitch.Value)}"
                     : $"camera set {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)}";
                 break;
+
+            case "move":
+            {
+                if (x == null || y == null || z == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Move needs x, y and z: a step along the camera's own axes", null);
+                }
+
+                if (yaw != null || pitch != null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "yaw and pitch belong to mode=Set; mode=Move only takes a local step", null);
+                }
+
+                command = $"camera move {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)}";
+                break;
+            }
+
+            case "lookat":
+            {
+                if (x == null || y == null || z == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Lookat needs x, y and z: the world point to aim at", null);
+                }
+
+                if (yaw != null || pitch != null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "yaw and pitch belong to mode=Set; mode=Lookat derives the rotation from the target", null);
+                }
+
+                command = $"camera lookat {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)}";
+                break;
+            }
 
             default:
                 return new CameraResult("error", "invalid_argument", "mode must be get or set", null);
