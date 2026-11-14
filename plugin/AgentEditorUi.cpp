@@ -420,6 +420,13 @@ namespace ckagent
 			return s;
 		}
 
+		// Constraint: the payload must be built from Quote, because an escaped-quote literal here does not compile.
+		std::string DismissedJson(const std::string& by, const std::string& handle)
+		{
+			return std::string("{") + Quote("dismissed") + ":1," + Quote("by") + ":" + Quote(by) + "," +
+				Quote("hwnd") + ":" + Quote(handle) + "}";
+		}
+
 		std::string ModalsJson()
 		{
 			std::string out = "[";
@@ -855,6 +862,33 @@ namespace ckagent
 			char handle[24];
 			std::snprintf(handle, sizeof handle, "%llX", HandleOf(button));
 			payload = "{\"clicked\":" + Quote(caption) + ",\"hwnd\":" + Quote(std::string("0x") + handle) + "}";
+			return true;
+		}
+
+		if (tool == "ui.dismiss")
+		{
+			// Constraint: the button must abandon the pending work, never apply it, so OK is never pressed.
+			HWND dialog = ToHwnd(argText(0));
+			if (!dialog || !IsWindow(dialog) || !IsClass(dialog, L"#32770"))
+			{
+				errorCode = "bad_hwnd";
+				errorMessage = "ui.dismiss needs the hwnd of a dialog from ui.modals";
+				return false;
+			}
+
+			const wchar_t* const safe[] = { L"Cancel", L"Close" };
+			for (int i = 0; i < 2; ++i)
+			{
+				HWND button = FindButtonByText(dialog, U8(safe[i]));
+				if (!button || !IsWindowEnabled(button)) continue;
+				PostMessageW(button, BM_CLICK, 0, 0);
+				payload = DismissedJson(U8(safe[i]), argText(0));
+				return true;
+			}
+
+			// Constraint: a modal with no Cancel button must still end, and WM_CLOSE is its own Esc.
+			PostMessageW(dialog, WM_CLOSE, 0, 0);
+			payload = DismissedJson("WM_CLOSE", argText(0));
 			return true;
 		}
 

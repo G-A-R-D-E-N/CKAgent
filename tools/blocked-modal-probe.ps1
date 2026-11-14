@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Recreates the editor's hidden-modal state and asserts CKAgent reveals the dialog and retries the call.
+Recreates the editor's hidden-modal state and asserts CKAgent dismisses the dialog and retries the call.
 
 .DESCRIPTION
 A modal created while the editor is not foreground can leave the frame disabled with no dialog on
@@ -8,11 +8,12 @@ screen: `status.blockedBy` is then the only place the reason appears. This probe
 checks the recovery path instead of the operator:
 
   1. the dialog exists, is blocking, and both `status` and `ui.modals` report it as hidden;
-  2. an MCP call that needs the frame goes through BlockedEditor, which reveals the dialog once and
-     retries the command;
-  3. after that call the dialog is visible, and the reply either succeeded or named the dialog while
-     saying it was revealed - the two outcomes the retry logic allows;
-  4. dismissing the dialog clears `status.blockedBy` and the same call then succeeds.
+  2. an MCP call that needs the frame goes through BlockedEditor, which dismisses the dialog itself and
+     retries the command, so the caller is never asked to click;
+  3. after that call no blocking dialog is left and the reply is the retry's own result;
+  4. dismissing a dialog clears `status.blockedBy` and the same call then succeeds;
+  5. with the dismissal skipped through CKAGENT_TEST_DISMISS_FAILS=1, the reply names the dialog and says
+     it could not be dismissed, and the plugin's `ui.dismiss` then clears it.
 
 The MCP step runs through `mcp-call.mjs` because the retry lives in the server, above the plugin pipe.
 The dialog comes from the editor's own modal command, because the hidden state is defined by Windows:
@@ -278,34 +279,27 @@ if ($control.status -ne 'ok') {
     $failures.Add('a succeeding call already changed the hidden dialog, so a failing call proves nothing about the reveal')
 }
 
-# 2b. A call that fails must go through the reveal-and-retry path.
+# 2b. A call that fails must dismiss the blocking dialog itself and retry, with no clicking asked for.
 $call = Invoke-Mcp $BlockedTool $BlockedArgs
 $observed['mcpExit'] = $script:mcpExit
 $observed['mcpReply'] = [ordered]@{ status = $call.status; code = $call.code; message = $call.message }
 $observed['mcpPayload'] = $call.payload
 
-# 3. The reveal must be observable. Showing the editor's own modal can make the editor finish with it, so
-# the dialog may end up visible or gone - what must not happen is that it stays hidden, which is the state
-# only a reveal changes.
+# 3. No blocking dialog may survive the call, and the reply must not send the caller off to press a button.
 $after = Find-Blocking
-$observed['hiddenAfterCall'] = if ($after) { $after.visible } else { 'gone' }
-if ($after -and $after.visible -ne $true) {
-    $failures.Add('the dialog is still hidden after a failing call, so BlockedEditor never revealed it')
+$observed['blockingAfterCall'] = if ($after) { "$($after.hwnd) '$($after.title)' visible=$($after.visible)" } else { 'none' }
+if ($after) {
+    $failures.Add("a blocking dialog survived a failing call ($($observed['blockingAfterCall'])), so BlockedEditor did not dismiss it")
+}
+if ("$($call.message)" -match 'ui\.click') {
+    $failures.Add("the reply still asks the caller to click the dialog away: $($call.message)")
 }
 
 if ($call.status -eq 'ok') {
-    $observed['outcome'] = 'retried successfully once the dialog was shown'
-} elseif ("$($call.message)" -match 'it was revealed') {
-    # A dialog that still blocks is reported by name, which is the other half of the contract.
-    $observed['outcome'] = 'reported the dialog by name after revealing it'
-    if ("$($call.message)" -notmatch [regex]::Escape($hidden.title)) {
-        $failures.Add("the blocked reply does not name the dialog '$($hidden.title)': $($call.message)")
-    }
-} elseif (-not $after) {
-    # The block cleared, so BlockedEditor had nothing left to name and reported the retry's own failure.
-    $observed['outcome'] = 'the reveal cleared the block; the retry reported its own failure'
+    $observed['outcome'] = 'retried successfully once the dialog was dismissed'
 } else {
-    $failures.Add("the MCP call neither succeeded nor reported a revealed dialog: $($call.code) $($call.message)")
+    # The block cleared, so BlockedEditor had nothing left to name and the retry's own failure stands.
+    $observed['outcome'] = 'the dismissal cleared the block; the retry reported its own failure'
 }
 
 # 4. Dismissing it must leave the editor usable again.
@@ -331,14 +325,13 @@ if ($KeepModal) {
     }
 }
 
-# 5. A reveal that fails must take the still-blocked branch. That branch is otherwise unreachable here,
-# because the editor finishes with its own modal as soon as it is shown, so the server honours
-# CKAGENT_TEST_REVEAL_FAILS to refuse the reveal and leave the dialog exactly where the path expects it.
+# 5. A dialog that cannot be dismissed must take the still-blocked branch. The server honours
+# CKAGENT_TEST_DISMISS_FAILS to skip the dismissal, which is the only way to reach that branch here.
 if ($KeepModal) {
     $observed['refusalPhase'] = 'skipped by -KeepModal'
 } else {
     $refused = $null
-    $env:CKAGENT_TEST_REVEAL_FAILS = '1'
+    $env:CKAGENT_TEST_DISMISS_FAILS = '1'
     try {
         $refused = New-HiddenModal -Phase 'refusal'
         if (-not $refused) {
@@ -347,7 +340,7 @@ if ($KeepModal) {
             $refusedStatus = Get-Status
             $observed['refusalBlockedBy'] = $refusedStatus.blockedBy
             if (-not $refusedStatus.blockedBy) {
-                $failures.Add('status stopped naming the dialog before the refused-reveal phase')
+                $failures.Add('status stopped naming the dialog before the skipped-dismissal phase')
             }
 
             $refusal = Invoke-Mcp $BlockedTool $BlockedArgs
@@ -356,22 +349,35 @@ if ($KeepModal) {
             $stillHidden = Find-Blocking
             $observed['refusalStillHidden'] = if ($stillHidden) { $stillHidden.visible } else { 'gone' }
 
-            # The reply must name the dialog and say the reveal was refused, not that it is on screen.
-            if ("$($refusal.message)" -notmatch 'reveal was refused') {
-                $failures.Add("a failed reveal was not reported as a refused reveal: '$($refusal.message)'")
+            # The reply must name the dialog, say it could not be dismissed, and say how to close it by hand.
+            if ("$($refusal.message)" -notmatch 'could not be dismissed automatically') {
+                $failures.Add("a skipped dismissal was not reported as such: '$($refusal.message)'")
             }
             if ("$($refusal.message)" -notmatch [regex]::Escape($refused.title)) {
                 $failures.Add("the still-blocked reply does not name the dialog '$($refused.title)': $($refusal.message)")
             }
-            if ("$($refusal.message)" -match 'already on screen') {
-                $failures.Add('a refused reveal was reported as a dialog already on screen')
+            if ("$($refusal.message)" -notmatch 'ui\.click') {
+                $failures.Add("the still-blocked reply does not say how to close the dialog by hand: $($refusal.message)")
             }
             if (-not $stillHidden -or $stillHidden.visible -ne $false) {
-                $failures.Add('the dialog is no longer hidden after a refused reveal, so the reveal was not actually refused')
+                $failures.Add('the dialog is no longer hidden after a skipped dismissal, so nothing was left blocking')
+            }
+
+            # 6. The plugin's own dismissal must clear that same dialog: it is the primitive BlockedEditor calls.
+            $dismissal = (Invoke-Plugin "ui.dismiss $($refused.hwnd)") | ConvertFrom-Json
+            $observed['dismissedBy'] = $dismissal.by
+            if ($dismissal.dismissed -ne $true) {
+                $failures.Add('ui.dismiss did not report dismissing the dialog')
+            }
+            Start-Sleep -Milliseconds 700
+            $released = (Get-Status).blockedBy
+            $observed['blockedAfterPrimitive'] = $released
+            if ($released) {
+                $failures.Add("ui.dismiss left the editor blocked by '$released'")
             }
         }
     } finally {
-        Remove-Item Env:CKAGENT_TEST_REVEAL_FAILS -ErrorAction SilentlyContinue
+        Remove-Item Env:CKAGENT_TEST_DISMISS_FAILS -ErrorAction SilentlyContinue
         if ($refused) { Close-Modal $refused | Out-Null }
     }
 }
@@ -384,6 +390,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output 'PASS the hidden modal was detected, revealed and retried, and the editor recovered once it closed'
+Write-Output 'PASS the hidden modal was detected, dismissed by the server and retried, and the editor recovered'
 Write-Output $evidenceJson
 exit 0

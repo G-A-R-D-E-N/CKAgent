@@ -66,7 +66,8 @@ with the editor's own validation, undo recording and dialogs. That alone is a la
 surface, and the full ID table should be captured as a checked-in manifest rather than hard-coded
 from memory.
 
-Limits: a command that needs a modal dialog (Preferences, Data) will block; commands that act on a
+Limits: a command that needs a modal dialog (Preferences, Data) will block, and only a hidden one is
+cleared for you; commands that act on a
 selection need the selection made first, and the render window has no "command" for placing a
 reference where you want it.
 
@@ -371,7 +372,7 @@ matching the shape of `BGS/tools/mcp`. It needs no plugin to run:
 | `ck.cell_load` | open a cell by EditorID or display name through the Cell View's own `NM_DBLCLK` handler; reports the item it opened |
 | `ck.cell` | the cell the render window holds, by EditorID and form id, so a load is confirmed from the reply instead of inferred from a pointer |
 | `ck.frame` | load a cell and stand the camera in front of one of its references (`reference` = reference EditorID, base object EditorID or 8-digit form id; optional `cell`, `distance`, `yaw`), so an object is inspected without navigating by hand; reports the match, the target, the pose and whether the object sits ahead along the view row |
-| `ck.status` (`blockedBy`) | names the hidden modal that has disabled the editor, so a blocked editor is not mistaken for a hung or idle one; every plugin tool reads it after a failure, reveals that dialog once, retries, and then reports the dialog by name and handle if the block remains. The reply keeps the original failure code and only the message gains the block, and it distinguishes three states: already on screen, revealed, or a reveal that was refused. `tools/blocked-modal-probe.ps1` covers both the revealed and the refused outcome against a live editor instead of by hand; the refused one is forced with `CKAGENT_TEST_REVEAL_FAILS=1` because the editor finishes with its own modal as soon as it is shown |
+| `ck.status` (`blockedBy`) | names the hidden modal that has disabled the editor, so a blocked editor is not mistaken for a hung or idle one; every plugin tool reads it after a failure, dismisses that dialog with `ui.dismiss`, retries, and only reports it by name and handle if the block survives. The reply keeps the original failure code and only the message gains the block, saying whether the dialog was dismissed but the block persisted, or could not be dismissed at all. `tools/blocked-modal-probe.ps1` covers both outcomes against a live editor instead of by hand; the still-blocked one is forced with `CKAGENT_TEST_DISMISS_FAILS=1` because a dialog the server does handle is gone by the time the call returns |
 | `ck.ui` | passthrough to the in-process control tools (`ui.items`, `ui.select`, `ui.notify`, `ui.command`, `ui.click`, `ui.windows`, `ui.tree`, `ui.menu`): `method=ui.notify`, `args=0x16C1752 dblclk 2` |
 | `ck.resolve` | ask the plugin for one fresh resolution of both anchors and return the addresses, or the reason nothing validated — the refresh to call after loading a cell |
 | `ck.generate_precombine` / `ck.generate_previs` | start `-GeneratePreCombined:` / `-GeneratePreVisData:` as a job, one at a time |
@@ -404,6 +405,7 @@ Loading a cell needs no mouse: the plugin drives the editor's own controls on th
 | `ui.notify <hwnd> dblclk [index]` | deliver `NM_DBLCLK` to the parent — the notification the CK acts on |
 | `ui.command <text\|path\|id> [dry]` / `ui.menu` | run a menu command. A path (`File/Data`, `File>Data`) is resolved level by level and refuses a disabled item; a bare caption is searched across the bar; `dry` resolves without posting, because ids change between builds |
 | `ui.click <hwnd> <caption>` | press a dialog button by caption, which is how a command that opened a modal is dismissed |
+| `ui.dismiss <hwnd>` | press the button that abandons a dialog's pending work — `Cancel`, then `Close`, else `WM_CLOSE` — so a blocking modal clears without knowing its captions; OK is never pressed |
 | `ui.modals [reveal <hwnd>]` | list every dialog with its owner, visibility, enabled state and button captions, flagging as `blocking` the invisible one that owns a disabled window; `reveal` shows one |
 | `ui.cells [filter]` / `ui.cellload <name>` | name-addressed cell list, and open one |
 | `ui.dataload <plugin>` | tick a master file in `File > Data` (two calls: the command, then the dialog) |

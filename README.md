@@ -124,8 +124,9 @@ Everything above was measured against a live editor, not read off the SDK:
   π with pitch 0.4), measures 400.00 from the probe's own translation each time, and leaves `pivotRead`
   equal to the point with `hasPivot: true`, so the editor's own orbit and zoom now work around it.
 - A dialog created while the editor is not foreground stays invisible and disables the frame; CKAgent detects
-  it from `status`, reveals it, retries once, and names it if it still blocks. `tools/blocked-modal-probe.ps1`
-  recreates that state and asserts the whole sequence, so it is no longer a manual check.
+  it from `status`, dismisses it with Cancel (or WM_CLOSE when it has no Cancel button), retries once, and
+  only names it if it still blocks. `tools/blocked-modal-probe.ps1` recreates that state and asserts the
+  whole sequence, so it is no longer a manual check.
 
 ---
 
@@ -223,15 +224,15 @@ editor, no plugin build, nothing to install, which is why it can run on a stock 
 
 `tools/blocked-modal-probe.ps1` covers the part that cannot run on a runner: it needs a live editor. It
 opens `File/Data` while the editor is in the background so the dialog is created hidden, asserts `status`
-names it, then makes a call that must fail (`ck.frame` with no cell loaded) and asserts the dialog stops
-being hidden and the editor is usable again — with a control call first that succeeds and must leave the
-dialog alone, so the change can only come from the reveal-and-retry path. The MCP step runs through
+names it, then makes a call that must fail (`ck.frame` with no cell loaded) and asserts no blocking dialog
+is left afterwards and the reply does not send anyone off to click — with a control call first that
+succeeds and must leave the dialog alone, so the change can only come from the dismiss-and-retry path. The MCP step runs through
 `tools/mcp-call.mjs`, so the retry above the plugin pipe is what is exercised. Run it from the repository
 root with the editor running and no cell open; exit code 2 means the hidden state did not reproduce, not
 that the code failed, and the dialog is always dismissed with Cancel so the load order is untouched.
 
-A second phase covers the still-blocked reply. It starts the server with `CKAGENT_TEST_REVEAL_FAILS=1`, so
-the reveal is refused and the dialog stays hidden — the only way to reach that branch here, because the
-editor finishes with its own modal as soon as it is shown. The reply must then keep the original failure
-code, name the dialog, say the reveal was refused rather than that the dialog is on screen, and the
-dialog must still be hidden when it is over.
+A second phase covers the still-blocked reply. It starts the server with `CKAGENT_TEST_DISMISS_FAILS=1`, so
+the dismissal is skipped — the only way to reach that branch, because a dialog the server does handle is
+gone by the time the call returns. The reply must keep the original failure code, name the dialog, say it
+could not be dismissed automatically, and say how to close it by hand. The same dialog is then closed with
+the plugin's own `ui.dismiss`, which must report the button it pressed and leave `status.blockedBy` empty.
