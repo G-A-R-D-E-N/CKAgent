@@ -199,6 +199,16 @@ if (Test-Path -LiteralPath $Frame -PathType Leaf) {
             }
         }
 
+        # Regression: framing that leaves the near plane closer than the box cuts the object in half.
+        foreach ($expectation in @(
+                @('frustum\.m_fNear = nearPlane', 'the near plane is not fitted, so a close object is clipped'),
+                @('farHeld', 'the reply does not say whether the far plane it asked for survived the editor'),
+                @('slave->GetFrustum\(\)\.m_fNear', 'the fitted near plane is not read back after the write'))) {
+            if ($run.Value -notmatch $expectation[0]) {
+                $failures.Add("RunFrameTool no longer matches /$($expectation[0])/: $($expectation[1])")
+            }
+        }
+
         # Constraint: the fixed standoff is what this replaced, and it still frames something plausible.
         if ($run.Value -match ':\s*256\.0f') {
             $failures.Add('RunFrameTool still falls back to a fixed 256 standoff, so the object size is ignored')
@@ -225,6 +235,8 @@ if (Test-Path -LiteralPath $Frame -PathType Leaf) {
                 @('requestedFov > 1\.0f && requestedFov < 179\.0f', 'the field of view has no range check'),
                 @('zoomFactor > 0\.0f && zoomFactor <= 20\.0f', 'the zoom factor has no range check'),
                 @('not_perspective', 'an orthographic view is not refused, where a field of view does not apply'),
+                @('after\.nearPlane, after\.farPlane', 'the near and far planes are not reported, so a fit cannot be checked'),
+                @('LensZoom\(after\)', 'the zoom is echoed from the request rather than measured from the lens'),
                 @('applied\b', 'the reply does not say whether the lens reached the value asked for'))) {
             if ($lens.Value -notmatch $expectation[0]) {
                 $failures.Add("RunLensTool no longer matches /$($expectation[0])/: $($expectation[1])")

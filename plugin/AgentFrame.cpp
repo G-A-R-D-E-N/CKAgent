@@ -285,12 +285,29 @@ namespace ckagent
 		const float radius = bounds.radius;
 		const char* boundsSource = bounds.fromReference ? "reference" : "fallback";
 		const float distance = requestedDistance > 0.0f ? requestedDistance : kFrameFit * radius;
+
+		// Constraint: the near and far planes must enclose the whole box, or the framed object is clipped.
+		const float nearFit = distance - radius * 1.5f;
+		const float nearPlane = nearFit > 1.0f ? nearFit : 1.0f;
+		const float farPlane = distance + radius * 2.0f;
+
 		const float pitch = -kFrameElevation;
 		const float cosPitch = std::cos(pitch);
 
 		SetViewPose(camera, center.x - distance * cosPitch * std::cos(yaw),
 			center.y - distance * cosPitch * std::sin(yaw),
 			center.z - distance * std::sin(pitch), yaw, pitch);
+
+		// Constraint: the planes go in after the pose, because the editor re-derives them when it re-poses.
+		auto* slave = camera->GetCamera();
+		bool planesApplied = false;
+		if (slave)
+		{
+			auto frustum = slave->GetFrustum();
+			frustum.m_fNear = nearPlane;
+			slave->SetFrustum(frustum);
+			planesApplied = true;
+		}
 
 		const NiPoint3 after = camera->GetPosition();
 
@@ -301,19 +318,25 @@ namespace ckagent
 		const double span = std::sqrt(dx * dx + dy * dy + dz * dz);
 		const double aim = AimAgainst(camera, after, center);
 
-		char buf[980];
+		const float nearRead = slave ? slave->GetFrustum().m_fNear : 0.0f;
+		const float farRead = slave ? slave->GetFrustum().m_fFar : 0.0f;
+		const bool farHeld = std::fabs(farRead - farPlane) < 0.5f;
+
+		char buf[1160];
 		std::snprintf(buf, sizeof buf,
 			"{\"reference\":\"%s\",\"base\":\"%s\",\"formId\":\"%08X\",\"matches\":%d,"
 			"\"target\":[%.4f,%.4f,%.4f],\"center\":[%.4f,%.4f,%.4f],\"camera\":[%.4f,%.4f,%.4f],"
 			"\"bounds\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"boundsSource\":\"%s\",\"radius\":%.2f,"
-			"\"distance\":%.2f,\"yaw\":%.4f,\"pitch\":%.4f,"
+			"\"distance\":%.2f,\"near\":%.4f,\"far\":%.4f,\"nearRead\":%.4f,\"farRead\":%.4f,"
+			"\"farHeld\":%s,\"planesApplied\":%s,\"yaw\":%.4f,\"pitch\":%.4f,"
 			"\"span\":%.2f,\"aim\":%.4f,\"aligned\":%s,\"references\":%lu}",
 			hit.id.c_str(), hit.baseId.c_str(), hit.ref->GetFormID(), hit.matches,
 			targetPoint.x, targetPoint.y, targetPoint.z,
 			center.x, center.y, center.z,
 			after.x, after.y, after.z,
 			bounds.min.x, bounds.min.y, bounds.min.z, bounds.max.x, bounds.max.y, bounds.max.z,
-			boundsSource, radius, distance, yaw, pitch, span, aim,
+			boundsSource, radius, distance, nearPlane, farPlane, nearRead, farRead,
+			farHeld ? "true" : "false", planesApplied ? "true" : "false", yaw, pitch, span, aim,
 			aim > 0.999 ? "true" : "false",
 			static_cast<unsigned long>(hit.count));
 		payload = buf;
@@ -351,6 +374,15 @@ namespace ckagent
 		double VerticalFov(const Lens& lens)
 		{
 			return DegreesOf(lens.top) - DegreesOf(lens.bottom);
+		}
+
+		constexpr double kDefaultFov = 56.6941;  // the render window's own vertical field of view, in degrees
+
+		// Invariant: zoom is measured against the lens the render window starts with, so it reads 1 at home.
+		double LensZoom(const Lens& lens)
+		{
+			const double fov = VerticalFov(lens);
+			return fov > 1e-3 ? kDefaultFov / fov : 1.0;
 		}
 
 		double HorizontalFov(const Lens& lens)
@@ -444,15 +476,17 @@ namespace ckagent
 		const double fov = VerticalFov(after);
 		const double applied = (settingFov || zooming) ? std::fabs(fov - wantedFov) < 0.05 : true;
 
-		char buf[720];
+		char buf[960];
 		std::snprintf(buf, sizeof buf,
 			"{\"fov\":%.4f,\"horizontalFov\":%.4f,\"wasFov\":%.4f,\"requested\":%.4f,"
-			"\"frustum\":[%.5f,%.5f,%.5f,%.5f,%.4f,%.4f],\"ortho\":%s,\"viewMode\":\"%s\","
-			"\"zoom\":%.4f,\"applied\":%s,\"changed\":%s}",
+			"\"frustum\":[%.5f,%.5f,%.5f,%.5f,%.4f,%.4f],\"near\":%.4f,\"far\":%.4f,"
+			"\"zoom\":%.4f,\"zoomRequested\":%.4f,\"ortho\":%s,\"viewMode\":\"%s\","
+			"\"applied\":%s,\"changed\":%s}",
 			fov, HorizontalFov(after), VerticalFov(before), settingFov ? requestedFov : 0.0f,
 			after.left, after.right, after.top, after.bottom, after.nearPlane, after.farPlane,
+			after.nearPlane, after.farPlane, LensZoom(after), zoomFactor,
 			after.ortho ? "true" : "false", after.viewMode == 0 ? "perspective" : "orthographic",
-			zoomFactor, applied ? "true" : "false",
+			applied ? "true" : "false",
 			std::fabs(fov - VerticalFov(before)) > 0.01 ? "true" : "false");
 		payload = buf;
 		return true;

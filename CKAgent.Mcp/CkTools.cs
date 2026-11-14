@@ -378,7 +378,8 @@ public sealed class CameraTools
                  "the editor's own RotateBy, and reports the yaw and pitch it achieved with their deltas, so " +
                  "an orbit step can be compared against the editor's rotation directly; a step that leaves " +
                  "the view unchanged fails as rotate_noop. mode=Lens reads the field of view from the scene camera's own " +
-                 "frustum and reports it in degrees, with the raw frustum and the view mode; passing fov " +
+                 "frustum and reports it in degrees along with the near and far planes, the zoom measured " +
+                 "against the render window's own lens, the raw frustum and the view mode; passing fov " +
                  "sets a vertical field of view in degrees, and passing zoom scales the field of view by a " +
                  "factor, where above 1 zooms in; both report what was achieved rather than what was asked " +
                  "for, and the editor's own Zoom call is not used because it leaves the frustum unchanged. " +

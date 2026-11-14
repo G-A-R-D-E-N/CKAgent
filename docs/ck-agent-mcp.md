@@ -514,6 +514,21 @@ Three references in that cell framed at their own scale: `Inst305Bulb05` bounds 
 radius `25.98` distance `62.35`, `DefaultLightGreenFungus01NS` radius `20.15` distance `48.36`, and
 `MS14TrailerMarker` radius `27.37` distance `65.68` — the ratio held at `2.4` every time.
 
+Framing also fits the lens to the box, because a standoff that clears the object still clips it if the near
+plane sits further out. `ck.frame` writes the near plane at `distance - 1.5 × radius` (floored at `1`) and
+reports `near`, `nearRead`, `far`, `farRead` and `farHeld`:
+
+| Reference | `radius` | `distance` | Near plane | Box front | `far` / `farRead` | `farHeld` |
+|---|---|---|---|---|---|---|
+| `Inst305Bulb05` | `25.98` | `62.35` | `23.3827` | `36.37` | `114.3154` / `300000` | `false` |
+| `MS14TrailerMarker` | `27.37` | `65.68` | `24.6311` | `38.31` | `120.4186` / `300000` | `false` |
+| `DefaultLightGreenFungus01NS` | `20.15` | `48.36` | `18.1345` | `28.21` | `88.6575` / `300000` | `false` |
+
+The near plane sits inside the box's front face in every case, so the framed object is not cut off, and a
+later `mode=lens` read still shows `23.3827` — the fit survives. The far plane it asks for
+(`distance + 2 × radius`) does not: the editor replaces it with its own `300000` every frame, which already
+covers any interior cell, and `farHeld` says so rather than a reply claiming a plane that is gone.
+
 Earlier measurements on `AndrewStation01` used the old fixed standoff and are still reproducible by passing
 it: `frame Loot_Prewar_Safe 256` reaches `-216.4394, 9492.1836, 272.3472`, and
 `frame Loot_Prewar_Safe 512 1.5708` reaches `39.5606, 8980.1836, 272.3472`, both `aim 1.0000`.
@@ -634,6 +649,16 @@ degrees. Setting `fov 30` writes `[±0.41675, ±0.26795]` and reads back exactly
 `90` with horizontal `114.5215`, and `fov 56.6941` restores the default frustum. `zoom 2` halves the field
 of view to `28.3471`, `zoom 0.5` doubles it back to `56.6941`, and a factor of `0`, `-1` or `30` is refused,
 as is a field of view at or outside `1` and `179` degrees.
+
+The reply also carries `near`, `far` and `zoom` as the lens stands: `10` and `300000` at the default view, and
+`zoom` is `56.6941 ÷ fov`, so the default reads `1`, `fov 30` reads `1.8898` and `zoom 2` from `fov 30`
+reads `3.7796` because it lands at `fov 15`. `zoomRequested` keeps the factor that was asked for, so a zoom
+that lands somewhere else is visible in the same reply instead of being assumed.
+
+The far plane belongs to the editor. Writing `114.3154` reads back immediately, but the next `mode=lens`
+read shows `300000` again, with the planes written before the pose or after it — while a written near plane
+(`23.3827`) is still there on that same read. That is why `ck.frame` fits the near plane and reports
+`farHeld` rather than assuming a far plane it set survived.
 
 Two limits are worth stating. The editor's own `Zoom` call is not used: measured with and without a pivot
 set, it left the frustum unchanged, so a zoom here is a field-of-view scale and a factor above `1` zooms

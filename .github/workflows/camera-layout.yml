@@ -119,6 +119,16 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the test accepted the fixed 256 standoff that ignores the object size' }
           $global:LASTEXITCODE = 0
 
+      - name: A frame that leaves the planes alone is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentFrame.cpp -Raw) -replace 'frustum\.m_fNear = nearPlane;', '' |
+            Set-Content drift/AgentFrame.cpp
+          ./tools/camera-layout.test.ps1 -Frame drift/AgentFrame.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted a frame that left the near plane where it was' }
+          $global:LASTEXITCODE = 0
+
       - name: An orbit that cannot take a reference name is rejected
         shell: pwsh
         run: |
