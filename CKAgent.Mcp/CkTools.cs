@@ -389,6 +389,51 @@ public sealed class CellTools
     }
 }
 
+public sealed record UiResult(
+    string Status,
+    string Code,
+    string Message,
+    string? Payload);
+
+// Constraint: the editor's controls are only reachable in-process, so this must stay a passthrough.
+[McpServerToolType]
+public sealed class UiTools
+{
+    private static readonly string[] Methods =
+    {
+        "ui.frame", "ui.windows", "ui.tree", "ui.items", "ui.select", "ui.notify",
+        "ui.command", "ui.menu", "ui.click", "ui.cells", "ui.cellload", "ui.dataload",
+    };
+
+    private readonly PluginClient _plugin;
+
+    public UiTools(PluginClient plugin) => _plugin = plugin;
+
+    [McpServerTool(Name = "ck.ui"),
+     Description("Drive the editor's own controls without the mouse: ui.items reads rows or tree nodes, " +
+                 "ui.select selects one, ui.notify sends NM_DBLCLK (ui.notify <hwnd> dblclk [index]), " +
+                 "ui.command runs a menu command by path (ui.command File/Data) or by id, ui.click presses " +
+                 "a dialog button by caption, ui.windows and ui.tree inspect, ui.menu dumps the menu bar. " +
+                 "Args is the tool's own argument tail, e.g. method=ui.notify, args=0x1234 dblclk 0.")]
+    public UiResult Ui(string method, string? args = null)
+    {
+        string chosen = (method ?? "").Trim();
+        if (Array.IndexOf(Methods, chosen) < 0)
+            return new UiResult("error", "invalid_argument",
+                "method must be one of: " + string.Join(", ", Methods), null);
+
+        string tail = (args ?? "").Trim();
+        if (tail.Contains('\n') || tail.Contains('\r'))
+            return new UiResult("error", "invalid_argument", "args must be a single line", null);
+
+        string command = tail.Length == 0 ? chosen : chosen + " " + tail;
+        if (!_plugin.TryCall(command, out string payload, out string code, out string message))
+            return new UiResult("error", code, message, null);
+
+        return new UiResult("ok", "ok", command, payload);
+    }
+}
+
 // Anchors can go stale after a cell load, so the refresh must be askable, not only automatic.
 [McpServerToolType]
 public sealed class ResolveTools

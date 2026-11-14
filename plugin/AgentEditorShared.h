@@ -32,6 +32,7 @@ namespace ckagent
 
 		HWND MainFrame();
 		int FindMenuCommand(HMENU m, const std::string& want, int depth = 3);
+		HWND FindButtonByText(HWND root, const std::string& text);
 
 		void NotifyParent(HWND control, UINT code, int item);
 		void SelectListViewRow(HWND h, int index);

@@ -453,6 +453,50 @@ namespace ckagent
 			return 0;
 		}
 
+		// A menu path must be resolved level by level, so a repeated caption cannot pick the wrong menu.
+		int ResolveMenuPath(HMENU menu, const std::vector<std::string>& path, std::size_t at, std::string& error)
+		{
+			const std::string want = Lower(StripAmp(path[at]));
+			const int count = GetMenuItemCount(menu);
+			for (int pass = 0; pass < 2; ++pass)
+			{
+				for (int i = 0; i < count; ++i)
+				{
+					wchar_t buf[256] = {};
+					GetMenuStringW(menu, i, buf, 255, MF_BYPOSITION);
+					const std::string text = Lower(StripAmp(CleanMenuText(buf)));
+					if (text.empty()) continue;
+					if (pass == 0 ? text != want : text.find(want) == std::string::npos) continue;
+
+					MENUITEMINFOW mi{};
+					mi.cbSize = sizeof mi;
+					mi.fMask = MIIM_ID | MIIM_SUBMENU | MIIM_STATE;
+					GetMenuItemInfoW(menu, i, TRUE, &mi);
+
+					if (at + 1 < path.size())
+					{
+						if (!mi.hSubMenu)
+						{
+							error = "no submenu under: " + path[at];
+							return 0;
+						}
+						return ResolveMenuPath(mi.hSubMenu, path, at + 1, error);
+					}
+
+					if (mi.fState & MFS_GRAYED)
+					{
+						error = "menu item is disabled: " + path[at];
+						return 0;
+					}
+
+					return static_cast<int>(mi.wID);
+				}
+			}
+
+			error = "menu item not found: " + path[at];
+			return 0;
+		}
+
 		// --- notification (must reach the parent, never the control) ---
 
 		// Constraint: the control's own double-click handler is what opens a cell, and it must be
@@ -622,7 +666,7 @@ namespace ckagent
 		if (tool == "ui.command")
 		{
 			const std::string target = argText(0);
-			int id = 0;
+			const bool dry = Lower(argText(1)) == "dry";
 			HWND frame = MainFrame();
 			if (!frame)
 			{
@@ -630,20 +674,107 @@ namespace ckagent
 				errorMessage = "the editor has no window with a menu bar yet";
 				return false;
 			}
-			// A command must be nameable: "ui.command Data" resolves through the frame's own menu bar.
-			if (!target.empty() && (std::isdigit(static_cast<unsigned char>(target[0])) && target.find("0x") == std::string::npos))
+
+			if (target.empty())
+			{
+				errorCode = "bad_args";
+				errorMessage = "ui.command needs a caption, a path like File/Data, or a numeric id";
+				return false;
+			}
+
+			// A path must be resolved level by level, because one caption can appear under several menus.
+			int id = 0;
+			std::string error;
+			if (std::isdigit(static_cast<unsigned char>(target[0])))
+			{
 				id = std::atoi(target.c_str());
-			else if (!target.empty())
+			}
+			else if (target.find('/') != std::string::npos || target.find('>') != std::string::npos)
+			{
+				std::string flat = target;
+				for (auto& c : flat)
+					if (c == '>') c = '/';
+
+				std::vector<std::string> path;
+				std::size_t at = 0;
+				while (at <= flat.size())
+				{
+					const std::size_t end = flat.find('/', at);
+					std::string part = flat.substr(at, end == std::string::npos ? std::string::npos : end - at);
+					while (!part.empty() && part.front() == ' ') part.erase(part.begin());
+					while (!part.empty() && part.back() == ' ') part.pop_back();
+					if (!part.empty()) path.push_back(part);
+					if (end == std::string::npos) break;
+					at = end + 1;
+				}
+
+				if (!path.empty())
+					id = ResolveMenuPath(GetMenu(frame), path, 0, error);
+			}
+			else
+			{
 				id = FindMenuCommand(GetMenu(frame), target);
+			}
 
 			if (!id)
 			{
 				errorCode = "no_command";
-				errorMessage = "no enabled menu item matches: " + target;
+				errorMessage = error.empty() ? ("no enabled menu item matches: " + target) : error;
 				return false;
 			}
-			PostMessageW(frame, WM_COMMAND, MAKEWPARAM(id, 0), 0);
-			payload = "{\"id\":" + std::to_string(id) + "}";
+
+			if (!dry)
+				PostMessageW(frame, WM_COMMAND, MAKEWPARAM(id, 0), 0);
+
+			payload = "{\"id\":" + std::to_string(id) + ",\"dry\":" + (dry ? "true" : "false") + "}";
+			return true;
+		}
+
+		if (tool == "ui.click")
+		{
+			// Dismissing what a command opened needs a button press, and it must be by caption, not id.
+			HWND root = ToHwnd(argText(0));
+			if (!root || !IsWindow(root))
+			{
+				errorCode = "bad_hwnd";
+				errorMessage = "ui.click needs a live window as its first argument";
+				return false;
+			}
+
+			std::string caption;
+			const std::size_t space = args.find(' ');
+			if (space != std::string::npos)
+			{
+				caption = args.substr(space + 1);
+				while (!caption.empty() && caption.front() == ' ') caption.erase(caption.begin());
+			}
+
+			if (caption.empty())
+			{
+				errorCode = "bad_args";
+				errorMessage = "ui.click needs a button caption after the window handle";
+				return false;
+			}
+
+			HWND button = FindButtonByText(root, caption);
+			if (!button)
+			{
+				errorCode = "no_button";
+				errorMessage = "no button matches: " + caption;
+				return false;
+			}
+
+			if (!IsWindowEnabled(button))
+			{
+				errorCode = "disabled";
+				errorMessage = "the button is disabled: " + caption;
+				return false;
+			}
+
+			PostMessageW(button, BM_CLICK, 0, 0);
+			char handle[24];
+			std::snprintf(handle, sizeof handle, "%llX", HandleOf(button));
+			payload = "{\"clicked\":" + Quote(caption) + ",\"hwnd\":" + Quote(std::string("0x") + handle) + "}";
 			return true;
 		}
 

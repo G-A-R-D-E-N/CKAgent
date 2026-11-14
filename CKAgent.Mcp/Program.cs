@@ -49,7 +49,8 @@ builder.Services.AddMcpServer()
     .WithTools<CkTools>()
     .WithTools<CameraTools>()
     .WithTools<ResolveTools>()
-    .WithTools<CellTools>();
+    .WithTools<CellTools>()
+    .WithTools<UiTools>();
 
 await builder.Build().RunAsync();
 return 0;
