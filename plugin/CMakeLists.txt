@@ -36,6 +36,7 @@ add_library(CKAgentPlugin SHARED
   AgentUi.cpp
   AgentEditorUi.cpp
   AgentCellFlow.cpp
+  AgentFrame.cpp
 )
 
 target_include_directories(CKAgentPlugin PRIVATE

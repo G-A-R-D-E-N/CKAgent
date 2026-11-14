@@ -270,6 +270,53 @@ public sealed class CameraTools
 
     public CameraTools(PluginClient plugin) => _plugin = plugin;
 
+    [McpServerTool(Name = "ck.frame"),
+     Description("Load a cell and put the camera in front of an object, so a reference can be inspected " +
+                 "without navigating by hand. cell is an EditorID or display name (skipped when omitted, so " +
+                 "an already loaded cell is used); reference matches a reference EditorID, its base object " +
+                 "EditorID, or an 8-digit form id; distance defaults to 256 and yaw picks which side to " +
+                 "stand on. Returns the matched object, its position, the camera pose and whether the object " +
+                 "sits ahead along the view row. Needs a loaded cell and CKPE with CKAgent.dll installed.")]
+    public CameraResult Frame(string reference, string? cell = null, double? distance = null, double? yaw = null)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+        {
+            return new CameraResult("error", "invalid_argument",
+                "reference is required: a reference EditorID, a base object EditorID, or a form id", null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(cell))
+        {
+            if (!_plugin.TryCall($"ui.cellload {cell.Trim()}", out string opened, out string openCode, out string openMessage))
+                return new CameraResult("error", openCode, openMessage, opened);
+
+            // The editor loads asynchronously, so framing must wait until the cell reports itself loaded.
+            bool loaded = false;
+            for (int attempt = 0; attempt < 60 && !loaded; attempt++)
+            {
+                if (_plugin.TryCall("cell", out string state, out _, out _) && state.Contains("\"loaded\":true"))
+                    loaded = true;
+                else
+                    Thread.Sleep(250);
+            }
+
+            if (!loaded)
+            {
+                return new CameraResult("error", "cell_not_loaded",
+                    $"the editor did not report {cell} as loaded within 15 s", null);
+            }
+        }
+
+        string command = $"frame {reference.Trim()}";
+        if (distance != null) command += " " + PluginClient.Format(distance.Value);
+        if (yaw != null) command += (distance == null ? " 0 " : " ") + PluginClient.Format(yaw.Value);
+
+        if (!_plugin.TryCall(command, out string payload, out string code, out string message))
+            return new CameraResult("error", code, message, null);
+
+        return new CameraResult("ok", "ok", command, payload);
+    }
+
     [McpServerTool(Name = "ck.camera"),
      Description("Drive the render window camera through the CKAgent plugin. mode=Get returns the " +
                  "scene camera's position, rotation matrix and scale; mode=Set places it at x/y/z with " +

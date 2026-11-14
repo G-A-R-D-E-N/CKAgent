@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cctype>
 #include <cstdarg>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -22,6 +24,7 @@
 
 #include "Agent.h"
 #include "AgentEditorShared.h"
+#include "AgentFrame.h"
 #include "AgentEditorUi.h"
 #include "AgentUi.h"
 #include "Protocol.h"
@@ -554,6 +557,34 @@ namespace ckagent
 			else if (tool == "cell")
 			{
 				payload = ToolCell();
+			}
+			else if (tool == "frame")
+			{
+				// A frame must run on this thread with resolved anchors, so the lookup and pose stay consistent.
+				FrameTarget target;
+				if (!ResolveNow(g_cameraWhen))
+				{
+					errorCode = "camera_unavailable";
+					errorMessage = g_cameraReason;
+				}
+				else
+				{
+					target.camera = reinterpret_cast<void*>(g_camera);
+					target.cell = reinterpret_cast<void*>(
+						*reinterpret_cast<const std::uintptr_t*>(g_renderWindow + kCurrentCellOffset));
+				}
+
+				if (errorCode.empty() && !RunFrameTool(args, target, payload, errorCode, errorMessage))
+				{
+					call.reply = "RPLY " + seq + " ERR " + errorCode + " " + errorMessage + "\n";
+					return;
+				}
+
+				if (!errorCode.empty())
+				{
+					call.reply = "RPLY " + seq + " ERR " + errorCode + " " + errorMessage + "\n";
+					return;
+				}
 			}
 			else if (tool.rfind("ui.", 0) == 0)
 			{
