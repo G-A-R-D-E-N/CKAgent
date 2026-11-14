@@ -662,6 +662,34 @@ Reproduce with `tools/camera-tool-cross-check.ps1` in each world; it reads the p
 and compares the node matrix with the scene camera's, so the numbers do not come from the plugin's own
 decode.
 
+### Per-reference scale in Diamond City, measured
+
+The scale that matters for framing is not the worldspace's: it is carried by each placed reference as
+`XSCL`, which the editor's Cell View does not show (its reference columns are `Editor ID`, `Form ID`,
+`Group`, `Type`, `Ownership`, `Lock Level`, `Loc Ref Type`, `Persist Location`, `Initially Disabled`,
+`Leveled Item`). Reading the cell through a record reader (`fo4editor`'s `get_placed_references`) gives
+`DiamondCityOrigin` in the `DiamondCity` worldspace as 1652 placed references, each with a `scale` field —
+the editor lists 1964 items for the same cell, so the two are not counting the same lists.
+
+Most of that cell is `1.0`, but not all of it: the first references in form-id order include
+`FenceChainlink03` as `00123B:Fallout4.esm` at `scale 1.059999942779541`, beside `00126A:Fallout4.esm`,
+the same base object at `1.0`. So a reference in this worldspace can carry a scale, and what it is depends
+on the reference rather than on the world.
+
+That scale does not reach the box the camera is sized from. Framing both of those references:
+
+| Reference | `scale` | `radius` | `distance` | Centre | `aim` |
+|---|---|---|---|---|---|
+| `0000123B` (`FenceChainlink03`, scaled) | `1.06` | `175.19` | `420.46` | `174.03, 3236.00, -1313.88` | `1` |
+| `0000126A` (`FenceChainlink03`) | `1.0` | `175.19` | `420.46` | `3105.38, 1984.90, -971.12` | `1` |
+
+Same base object, same radius and distance, a `1.06` scale apart. `GetBoundMin`/`GetBoundMax` as the plugin
+reads them are the reference's unscaled box, so `ck.frame` stands the camera as if the object were `1.0`:
+for this pair the true extent is `175.19 × 1.06 = 185.7`, which the camera does not account for. One scaled
+reference is a measurement of this cell, not a survey of the file — the reader returns the cell in one
+payload and was truncated — and the rendered image was not inspected, so the claim is about the bounds the
+tool reads, not about what the editor draws.
+
 ### Aiming up and down, measured
 
 `ck.aim` keeps the camera where it stands and turns it until the target sits on the scene camera's view
