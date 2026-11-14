@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <EditorAPI/T/TES.h>
+
 #include "AgentCellFlow.h"
 #include "AgentEditorShared.h"
 
@@ -362,5 +364,27 @@ namespace ckagent
 		errorCode = "unknown_tool";
 		errorMessage = tool;
 		return false;
+	}
+
+	Placement ReadPlacement(std::uintptr_t slot)
+	{
+		using TES = CKPE::Fallout4::EditorAPI::TES;
+
+		// Invariant: the editor's own table may not expose the slot, so the plugin assigns it once.
+		if (TES::Singleton.Empty())
+			TES::Singleton = slot;
+
+		Placement where;
+		TES* tes = TES::Singleton.GetSingleton();
+		if (!tes) return where;
+
+		where.hasSingleton = true;
+		where.empty = tes->Empty();
+		where.interior = tes->HasLoadedInterior();
+		const auto coords = tes->GetCurrentRendererCellCoordinates();
+		where.gridX = static_cast<int>(coords.X);
+		where.gridY = static_cast<int>(coords.Y);
+		where.hasWorldSpace = tes->worldSpace != nullptr;
+		return where;
 	}
 }

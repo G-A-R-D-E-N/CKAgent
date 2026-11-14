@@ -39,7 +39,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 |---|---|---|---|
 | Camera pose | `██████████████████░░` 90% | read position, rotation and scale; set position with yaw and pitch; step along the camera's own axes | orthographic / zoom control; field of view |
 | Framing and aiming | `████████████████░░░░` 80% | stand in front of a named reference at a distance and yaw; turn the current camera onto a name, tilting for objects above or below, and report the achieved aim | automatic distance and height that fit the object's bounds |
-| Cell navigation | `███████████████████░` 95% | list and open any interior or exterior cell by name (36 865 Commonwealth cells), confirm what is loaded | opening by grid coordinates; the World Space X/Y/Go fields |
+| Cell navigation | `███████████████████░` 95% | list and open any interior or exterior cell by name (36 865 Commonwealth cells), confirm what is loaded, as interior or exterior with its grid coordinates | opening by grid coordinates; the World Space X/Y/Go fields |
 | Reference lookup | `███████████░░░░░░░░░` 55% | find a reference in the loaded cell by EditorID, base EditorID or form id; read its position; get named samples when a name misses | reading a reference's property sheet; listing base objects; persistent ids; picking in the render window |
 | Editor UI | `█████████████████░░░` 85% | enumerate windows and controls, read trees/lists/tabs/combos, select rows, fire `NM_DBLCLK`/`NM_CLICK`, run menu commands, press dialog buttons, list and reveal dialogs | arbitrary text entry into fields; drag and drop; context menus; keyboard simulation |
 | Plugin load and save | `██████████░░░░░░░░░░` 50% | open the Data dialog and tick a plugin (two calls); save a plugin with a timestamped backup and verify the file changed | editing load order; creating a new plugin; saving as a new name; merging |
@@ -73,7 +73,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat`, `orbit` a point at a distance and angle |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row |
 | `ck.cell_load` | open a cell exactly as double-clicking it does, and report the cell the render window holds afterwards |
-| `ck.cell` | which cell the render window holds, as EditorID and form id, so a load is confirmed rather than assumed |
+| `ck.cell` | which cell the render window holds, as EditorID and form id, whether it is interior, and its grid coordinates, so a load is confirmed rather than assumed |
 | `ck.ui` | passthrough to the in-process control tools below |
 | `ck.resolve` | re-read the render window and camera once, for when anchors go stale after a load |
 

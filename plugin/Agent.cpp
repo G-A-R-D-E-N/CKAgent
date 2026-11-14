@@ -20,10 +20,10 @@
 #include <CKPE.Common.AddressLibrary.h>
 #include <CKPE.PluginAPI.PluginAPI.h>
 #include <EditorAPI/B/BGSRenderWindowCamera.h>
-#include <EditorAPI/T/TES.h>
 #include <EditorAPI/T/TESObjectCELL.h>
 
 #include "Agent.h"
+#include "AgentCellFlow.h"
 #include "AgentEditorShared.h"
 #include "AgentFrame.h"
 #include "AgentEditorUi.h"
@@ -34,7 +34,6 @@ namespace ckagent
 {
 	namespace
 	{
-		using TES = CKPE::Fallout4::EditorAPI::TES;
 		using CameraApi = CKPE::Fallout4::EditorAPI::BGSRenderWindowCamera;
 		using EditorCell = CKPE::Fallout4::EditorAPI::Forms::TESObjectCELL;
 		using NiPoint3 = CKPE::Fallout4::EditorAPI::NiPoint3;
@@ -134,16 +133,9 @@ namespace ckagent
 				return buf;
 			}
 
-			if (TES::Singleton.Empty())
-				TES::Singleton = ImageAddress(kTesSingletonOffset);
-
-			TES* tes = TES::Singleton.GetSingleton();
-			if (!tes)
+			const Placement where = ReadPlacement(ImageAddress(kTesSingletonOffset));
+			if (!where.hasSingleton)
 				return "{\"supported\":true,\"loaded\":false}";
-
-			const bool empty = tes->Empty();
-			const bool interior = tes->HasLoadedInterior();
-			const auto coords = tes->GetCurrentRendererCellCoordinates();
 
 			// A blocked editor must say so here, or a caller sees only a disabled frame and no reason.
 			std::string blocked = editor::HiddenModalTitle();
@@ -155,10 +147,10 @@ namespace ckagent
 				"{\"supported\":true,\"loaded\":%s,\"interior\":%s,"
 				"\"gridX\":%d,\"gridY\":%d,\"hasWorldSpace\":%s,"
 				"\"pid\":%lu,\"onEditorThread\":%s,\"blockedBy\":\"%s\"}",
-				empty ? "false" : "true",
-				interior ? "true" : "false",
-				static_cast<int>(coords.X), static_cast<int>(coords.Y),
-				tes->worldSpace ? "true" : "false",
+				where.empty ? "false" : "true",
+				where.interior ? "true" : "false",
+				where.gridX, where.gridY,
+				where.hasWorldSpace ? "true" : "false",
 				GetCurrentProcessId(),
 				g_threadOk.load() ? "true" : "false",
 				blocked.c_str());
@@ -565,6 +557,8 @@ namespace ckagent
 
 			const auto cell = *reinterpret_cast<const std::uintptr_t*>(g_renderWindow + kCurrentCellOffset);
 
+			const Placement where = ReadPlacement(ImageAddress(kTesSingletonOffset));
+
 			// A confirmed load must name the cell, because a pointer alone says nothing about which one it is.
 			std::string editorId, formId;
 			bool readable = false;
@@ -579,16 +573,20 @@ namespace ckagent
 				readable = true;
 			}
 
-			char buf[640];
+			char buf[768];
 			std::snprintf(buf, sizeof buf,
 				"{\"resolved\":true,\"window\":\"0x%llX\",\"cell\":\"0x%llX\",\"loaded\":%s,\"readable\":%s,"
-				"\"editorId\":%s,\"formId\":%s}",
+				"\"editorId\":%s,\"formId\":%s,"
+				"\"interior\":%s,\"gridX\":%d,\"gridY\":%d,\"hasWorldSpace\":%s}",
 				static_cast<unsigned long long>(g_renderWindow),
 				static_cast<unsigned long long>(cell),
 				cell ? "true" : "false",
 				readable ? "true" : "false",
 				editor::Quote(editorId).c_str(),
-				editor::Quote(formId).c_str());
+				editor::Quote(formId).c_str(),
+				where.interior ? "true" : "false",
+				where.gridX, where.gridY,
+				where.hasWorldSpace ? "true" : "false");
 			return buf;
 		}
 
