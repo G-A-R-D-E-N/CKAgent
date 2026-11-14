@@ -21,7 +21,9 @@ public sealed record EditorStatusResult(
     string? ManifestBuild,
     string? ManifestCapturedUtc,
     bool PluginPipeAvailable,
-    string StateDirectory);
+    string StateDirectory,
+    string? BlockedBy,
+    IReadOnlyList<string>? ModalButtons);
 
 public sealed record CommandListResult(
     string Status,
@@ -70,7 +72,9 @@ public sealed class CkTools
 
     [McpServerTool(Name = "ck.status"),
      Description("Report the installed Creation Kit and the running editor: build, process, main window, " +
-                 "command manifest age, and whether the in-process CKAgent plugin is listening.")]
+                 "command manifest age, and whether the in-process CKAgent plugin is listening. When a dialog " +
+                 "is blocking the editor it reports the dialog title and the captions of its buttons, so a " +
+                 "caller knows which one to click.")]
     public EditorStatusResult Status()
     {
         var document = _commands.Load();
@@ -82,11 +86,42 @@ public sealed class CkTools
                 "no CreationKit.exe for this install is running", false, null, null, null,
                 _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
                 document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-                false, _paths.StateDirectory);
+                false, _paths.StateDirectory, null, null);
         }
 
         IntPtr window = EditorDiscovery.FindMainWindow((uint)process.Id);
         bool pipe = EditorDiscovery.IsPluginPipeAvailable();
+
+        string? blockedBy = null;
+        IReadOnlyList<string>? modalButtons = null;
+        if (pipe && _plugin.TryCall("status", out string pluginStatus, out _, out _))
+        {
+            try
+            {
+                using JsonDocument statusDocument = JsonDocument.Parse(pluginStatus);
+                JsonElement root = statusDocument.RootElement;
+                if (root.TryGetProperty("blockedBy", out JsonElement blocked) && blocked.ValueKind == JsonValueKind.String)
+                {
+                    blockedBy = blocked.GetString();
+                }
+
+                if (root.TryGetProperty("modalButtons", out JsonElement buttons) && buttons.ValueKind == JsonValueKind.Array)
+                {
+                    var captions = new List<string>();
+                    foreach (JsonElement caption in buttons.EnumerateArray())
+                    {
+                        captions.Add(caption.GetString() ?? string.Empty);
+                    }
+
+                    modalButtons = captions;
+                }
+            }
+            catch (JsonException)
+            {
+                blockedBy = null;
+                modalButtons = null;
+            }
+        }
 
         string code = window != IntPtr.Zero ? "ok" : "window_not_ready";
         string message = window != IntPtr.Zero
@@ -98,7 +133,7 @@ public sealed class CkTools
             window != IntPtr.Zero ? window.ToInt64() : null,
             _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
             document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-            pipe, _paths.StateDirectory);
+            pipe, _paths.StateDirectory, blockedBy, modalButtons);
     }
 
     [McpServerTool(Name = "ck.commands"),

@@ -138,22 +138,20 @@ namespace ckagent
 				return "{\"supported\":true,\"loaded\":false}";
 
 			// A blocked editor must say so here, or a caller sees only a disabled frame and no reason.
-			std::string blocked = editor::HiddenModalTitle();
-			for (auto& c : blocked)
-				if (c == '"') c = '\'';
+			const editor::ModalBlock modal = editor::HiddenModal();
 
-			char buf[420];
+			char buf[900];
 			std::snprintf(buf, sizeof buf,
 				"{\"supported\":true,\"loaded\":%s,\"interior\":%s,"
 				"\"gridX\":%d,\"gridY\":%d,\"hasWorldSpace\":%s,"
-				"\"pid\":%lu,\"onEditorThread\":%s,\"blockedBy\":\"%s\"}",
+				"\"pid\":%lu,\"onEditorThread\":%s,\"blockedBy\":\"%s\",\"modalButtons\":%s}",
 				where.empty ? "false" : "true",
 				where.interior ? "true" : "false",
 				where.gridX, where.gridY,
 				where.hasWorldSpace ? "true" : "false",
 				GetCurrentProcessId(),
 				g_threadOk.load() ? "true" : "false",
-				blocked.c_str());
+				modal.title.c_str(), modal.buttons.c_str());
 			return buf;
 		}
 

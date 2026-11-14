@@ -384,8 +384,8 @@ namespace ckagent
 			return s;
 		}
 
-		// A dialog must be described well enough to decide about it: owner, state and its buttons.
-		std::string ModalJson(HWND h)
+		// Invariant: a dialog is dismissed by caption, so the buttons are listed wherever it is reported.
+		std::string ButtonsJson(HWND h, int max)
 		{
 			std::string buttons;
 			int shown = 0;
@@ -396,9 +396,14 @@ namespace ckagent
 				if (caption.empty()) continue;
 				if (shown++) buttons += ",";
 				buttons += Quote(caption);
-				if (shown >= 6) break;
+				if (shown >= max) break;
 			}
+			return "[" + buttons + "]";
+		}
 
+		// A dialog must be described well enough to decide about it: owner, state and its buttons.
+		std::string ModalJson(HWND h)
+		{
 			HWND owner = GetWindow(h, GW_OWNER);
 			char handle[24];
 			char ownerHandle[24];
@@ -416,7 +421,7 @@ namespace ckagent
 			s += (owner && IsWindowEnabled(owner)) ? "true" : "false";
 			s += ",\"blocking\":";
 			s += IsHiddenModal(h) ? "true" : "false";
-			s += ",\"buttons\":[" + buttons + "]}";
+			s += ",\"buttons\":" + ButtonsJson(h, 6) + "}";
 			return s;
 		}
 
@@ -447,6 +452,25 @@ namespace ckagent
 			for (HWND h : TopWindows())
 				if (IsHiddenModal(h)) return U8(WinText(h));
 			return {};
+		}
+
+		// Invariant: a blocked caller is told which caption dismisses the dialog, not only its title.
+		ModalBlock HiddenModal()
+		{
+			ModalBlock out;
+			out.buttons = "[]";
+			for (HWND h : TopWindows())
+			{
+				if (!IsHiddenModal(h)) continue;
+				out.title = U8(WinText(h));
+				for (auto& ch : out.title)
+				{
+					if (ch == '"') ch = '\'';
+				}
+				out.buttons = ButtonsJson(h, 6);
+				return out;
+			}
+			return out;
 		}
 
 		// --- menu (ids differ per build, so a command must be resolved by text) ---

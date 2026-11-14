@@ -32,8 +32,15 @@ namespace ckagent
 
 		HWND MainFrame();
 
+		struct ModalBlock
+		{
+			std::string title;
+			std::string buttons;
+		};
+
 		// A blocking modal must be nameable from anywhere, including a status line.
 		std::string HiddenModalTitle();
+		ModalBlock HiddenModal();
 		int FindMenuCommand(HMENU m, const std::string& want, int depth = 3);
 		HWND FindButtonByText(HWND root, const std::string& text);
 

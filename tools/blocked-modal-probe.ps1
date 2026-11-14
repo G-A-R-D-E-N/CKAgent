@@ -267,6 +267,20 @@ if (-not $statusNow.blockedBy) {
     $failures.Add("status names '$($statusNow.blockedBy)' but the modal list names '$($hidden.title)'")
 }
 
+# Regression: a caller told only the title still has to pick a button, so the captions must be there and
+# must be this dialog's own, or ui.click is aimed at a caption that no longer exists.
+$observed['statusModalButtons'] = @($statusNow.modalButtons)
+$captions = @($hidden.buttons)
+$reported = @($statusNow.modalButtons)
+if ($reported.Count -eq 0) {
+    $failures.Add("status did not report the buttons of the blocking dialog '$($hidden.title)', so a caller has no caption to click")
+} else {
+    $unknown = @($reported | Where-Object { $captions -notcontains $_ })
+    if ($unknown.Count -gt 0) {
+        $failures.Add("status reports button(s) '$($unknown -join ', ')' that the dialog does not have ('$($captions -join ', ')'), so a click on one misses")
+    }
+}
+
 # 2a. Control: a call that succeeds must leave the dialog hidden. Without this, the next assertion would
 # only show that some call changed the dialog, not that the retry path did.
 $control = Invoke-Mcp 'ck.ui' '{"method":"ui.cells"}'
