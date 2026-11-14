@@ -21,6 +21,7 @@
 #include <EditorAPI/T/TES.h>
 
 #include "Agent.h"
+#include "AgentEditorShared.h"
 #include "AgentEditorUi.h"
 #include "AgentUi.h"
 #include "Protocol.h"
@@ -139,17 +140,23 @@ namespace ckagent
 			const bool interior = tes->HasLoadedInterior();
 			const auto coords = tes->GetCurrentRendererCellCoordinates();
 
-			char buf[320];
+			// A blocked editor must say so here, or a caller sees only a disabled frame and no reason.
+			std::string blocked = editor::HiddenModalTitle();
+			for (auto& c : blocked)
+				if (c == '"') c = '\'';
+
+			char buf[420];
 			std::snprintf(buf, sizeof buf,
 				"{\"supported\":true,\"loaded\":%s,\"interior\":%s,"
 				"\"gridX\":%d,\"gridY\":%d,\"hasWorldSpace\":%s,"
-				"\"pid\":%lu,\"onEditorThread\":%s}",
+				"\"pid\":%lu,\"onEditorThread\":%s,\"blockedBy\":\"%s\"}",
 				empty ? "false" : "true",
 				interior ? "true" : "false",
 				static_cast<int>(coords.X), static_cast<int>(coords.Y),
 				tes->worldSpace ? "true" : "false",
 				GetCurrentProcessId(),
-				g_threadOk.load() ? "true" : "false");
+				g_threadOk.load() ? "true" : "false",
+				blocked.c_str());
 			return buf;
 		}
 

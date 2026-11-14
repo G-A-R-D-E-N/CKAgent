@@ -402,7 +402,7 @@ public sealed class UiTools
     private static readonly string[] Methods =
     {
         "ui.frame", "ui.windows", "ui.tree", "ui.items", "ui.select", "ui.notify",
-        "ui.command", "ui.menu", "ui.click", "ui.cells", "ui.cellload", "ui.dataload",
+        "ui.command", "ui.menu", "ui.click", "ui.modals", "ui.cells", "ui.cellload", "ui.dataload",
     };
 
     private readonly PluginClient _plugin;
@@ -413,7 +413,8 @@ public sealed class UiTools
      Description("Drive the editor's own controls without the mouse: ui.items reads rows or tree nodes, " +
                  "ui.select selects one, ui.notify sends NM_DBLCLK (ui.notify <hwnd> dblclk [index]), " +
                  "ui.command runs a menu command by path (ui.command File/Data) or by id, ui.click presses " +
-                 "a dialog button by caption, ui.windows and ui.tree inspect, ui.menu dumps the menu bar. " +
+                 "a dialog button by caption, ui.modals lists dialogs and flags the hidden one blocking the " +
+                 "editor (ui.modals reveal <hwnd> shows it), ui.windows and ui.tree inspect, ui.menu dumps it. " +
                  "Args is the tool's own argument tail, e.g. method=ui.notify, args=0x1234 dblclk 0.")]
     public UiResult Ui(string method, string? args = null)
     {

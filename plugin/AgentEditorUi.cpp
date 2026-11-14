@@ -376,14 +376,70 @@ namespace ckagent
 			bool first = true;
 			for (HWND h : TopWindows())
 			{
-				if (IsHiddenModal(h))
-					ShowWindowAsync(h, SW_SHOW);   // precondition: the caller asked for a usable UI, so reveal it
 				if (!first) s += ",";
 				first = false;
 				s += WindowJson(h);
 			}
 			s += "]";
 			return s;
+		}
+
+		// A dialog must be described well enough to decide about it: owner, state and its buttons.
+		std::string ModalJson(HWND h)
+		{
+			std::string buttons;
+			int shown = 0;
+			for (HWND c : Children(h))
+			{
+				if (!IsClass(c, L"Button")) continue;
+				const std::string caption = U8(WinText(c));
+				if (caption.empty()) continue;
+				if (shown++) buttons += ",";
+				buttons += Quote(caption);
+				if (shown >= 6) break;
+			}
+
+			HWND owner = GetWindow(h, GW_OWNER);
+			char handle[24];
+			char ownerHandle[24];
+			std::snprintf(handle, sizeof handle, "%llX", HandleOf(h));
+			std::snprintf(ownerHandle, sizeof ownerHandle, "%llX", HandleOf(owner));
+
+			std::string s = "{\"hwnd\":" + Quote(std::string("0x") + handle);
+			s += ",\"title\":" + Quote(U8(WinText(h)));
+			s += ",\"owner\":" + Quote(std::string("0x") + ownerHandle);
+			s += ",\"visible\":";
+			s += IsWindowVisible(h) ? "true" : "false";
+			s += ",\"enabled\":";
+			s += IsWindowEnabled(h) ? "true" : "false";
+			s += ",\"ownerEnabled\":";
+			s += (owner && IsWindowEnabled(owner)) ? "true" : "false";
+			s += ",\"blocking\":";
+			s += IsHiddenModal(h) ? "true" : "false";
+			s += ",\"buttons\":[" + buttons + "]}";
+			return s;
+		}
+
+		std::string ModalsJson()
+		{
+			std::string out = "[";
+			bool first = true;
+			for (HWND h : TopWindows())
+			{
+				if (!IsClass(h, L"#32770")) continue;
+				if (!first) out += ",";
+				first = false;
+				out += ModalJson(h);
+			}
+			out += "]";
+			return out;
+		}
+
+		std::string HiddenModalTitle()
+		{
+			for (HWND h : TopWindows())
+				if (IsHiddenModal(h)) return U8(WinText(h));
+			return {};
 		}
 
 		// --- menu (ids differ per build, so a command must be resolved by text) ---
@@ -727,6 +783,30 @@ namespace ckagent
 				PostMessageW(frame, WM_COMMAND, MAKEWPARAM(id, 0), 0);
 
 			payload = "{\"id\":" + std::to_string(id) + ",\"dry\":" + (dry ? "true" : "false") + "}";
+			return true;
+		}
+
+		if (tool == "ui.modals")
+		{
+			// Detection must be separable from the fix: listing reports, and reveal is asked for by handle.
+			if (Lower(argText(0)) == "reveal")
+			{
+				HWND h = ToHwnd(argText(1));
+				if (!h || !IsWindow(h) || !IsClass(h, L"#32770"))
+				{
+					errorCode = "bad_hwnd";
+					errorMessage = "ui.modals reveal needs the hwnd of a dialog from ui.modals";
+					return false;
+				}
+
+				ShowWindowAsync(h, SW_SHOW);
+				char handle[24];
+				std::snprintf(handle, sizeof handle, "%llX", HandleOf(h));
+				payload = "{\"revealed\":" + Quote(std::string("0x") + handle) + ",\"title\":" + Quote(U8(WinText(h))) + "}";
+				return true;
+			}
+
+			payload = ModalsJson();
 			return true;
 		}
 

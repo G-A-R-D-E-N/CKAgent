@@ -31,6 +31,9 @@ namespace ckagent
 		std::string ItemsJson(HWND h, int max, int offset);
 
 		HWND MainFrame();
+
+		// A blocking modal must be nameable from anywhere, including a status line.
+		std::string HiddenModalTitle();
 		int FindMenuCommand(HMENU m, const std::string& want, int depth = 3);
 		HWND FindButtonByText(HWND root, const std::string& text);
 
