@@ -372,7 +372,10 @@ public sealed class CameraTools
                  "mode=Orbit circles the world point x/y/z at the given distance and angle (radians, angle 0 " +
                  "looks along +X), optionally tilted, sets the editor's own pivot to that point so its own " +
                  "orbit and zoom continue from there, and reports the pivot it read back plus the radius " +
-                 "and aim it achieved. mode=Lens reads the field of view from the scene camera's own " +
+                 "and aim it achieved. mode=Rotate turns the camera by the step x/y/z in radians through " +
+                 "the editor's own RotateBy, and reports the yaw and pitch it achieved with their deltas, so " +
+                 "an orbit step can be compared against the editor's rotation directly; a step that leaves " +
+                 "the view unchanged fails as rotate_noop. mode=Lens reads the field of view from the scene camera's own " +
                  "frustum and reports it in degrees, with the raw frustum and the view mode; passing fov " +
                  "sets a vertical field of view in degrees, and passing zoom scales the field of view by a " +
                  "factor, where above 1 zooms in; both report what was achieved rather than what was asked " +
@@ -411,6 +414,24 @@ public sealed class CameraTools
                       $"{PluginClient.Format(yaw.Value)} {PluginClient.Format(pitch.Value)}"
                     : $"camera set {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)}";
                 break;
+
+            case "rotate":
+            {
+                if (x == null || y == null || z == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Rotate needs x, y and z: the step in radians around each of the camera's own axes", null);
+                }
+
+                if (yaw != null || pitch != null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "yaw and pitch belong to mode=Set; mode=Rotate takes the step in x, y and z", null);
+                }
+
+                command = $"camera rotate {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)}";
+                break;
+            }
 
             case "lens":
             {

@@ -436,6 +436,91 @@ namespace ckagent
 		return true;
 	}
 
+	bool RunRotateTool(const std::string& args, const FrameTarget& target, std::string& payload,
+		std::string& errorCode, std::string& errorMessage)
+	{
+		auto* camera = reinterpret_cast<CameraApi*>(target.camera);
+		if (!camera)
+		{
+			errorCode = "camera_unavailable";
+			errorMessage = "the render window has no camera object";
+			return false;
+		}
+
+		const std::vector<std::string> words = SplitWords(args);
+		if (words.size() < 4)
+		{
+			errorCode = "bad_args";
+			errorMessage = "rotate needs x y z steps, in radians, around the camera's own axes";
+			return false;
+		}
+
+		const float sx = static_cast<float>(std::atof(words[1].c_str()));
+		const float sy = static_cast<float>(std::atof(words[2].c_str()));
+		const float sz = static_cast<float>(std::atof(words[3].c_str()));
+		if (!std::isfinite(sx) || !std::isfinite(sy) || !std::isfinite(sz) ||
+			(std::fabs(sx) < 1e-6f && std::fabs(sy) < 1e-6f && std::fabs(sz) < 1e-6f))
+		{
+			errorCode = "bad_args";
+			errorMessage = "rotate needs a non-zero step, in radians";
+			return false;
+		}
+
+		const NiPoint3 beforePosition = camera->GetPosition();
+		float was[3] = { 0.0f, 0.0f, 0.0f };
+		float now[3] = { 0.0f, 0.0f, 0.0f };
+		const bool wasReadable = ReadSceneView(reinterpret_cast<void*>(camera), was);
+		const auto wasMatrix = camera->GetRotate();
+
+		camera->RotateBy(sx, sy, sz);
+		const auto nowMatrix = camera->GetRotate();
+		const bool nowReadable = ReadSceneView(reinterpret_cast<void*>(camera), now);
+
+		// Invariant: the whole matrix is compared, because a roll changes neither yaw nor pitch.
+		double matrixDelta = 0.0;
+		for (int row = 0; row < 3; ++row)
+			for (int col = 0; col < 3; ++col)
+				matrixDelta += std::fabs(static_cast<double>(nowMatrix.m_pEntry[row][col]) - wasMatrix.m_pEntry[row][col]);
+
+		// Invariant: the yaw and pitch come from the scene row the editor rotated.
+		const double wasYaw = std::atan2(static_cast<double>(was[1]), static_cast<double>(was[0]));
+		const double wasPitch = std::asin(std::fmax(-1.0, std::fmin(1.0, static_cast<double>(was[2]))));
+		const double yaw = std::atan2(static_cast<double>(now[1]), static_cast<double>(now[0]));
+		const double pitch = std::asin(std::fmax(-1.0, std::fmin(1.0, static_cast<double>(now[2]))));
+
+		double deltaYaw = yaw - wasYaw;
+		while (deltaYaw > 3.14159265358979) deltaYaw -= 6.28318530717959;
+		while (deltaYaw < -3.14159265358979) deltaYaw += 6.28318530717959;
+		const double deltaPitch = pitch - wasPitch;
+
+		const NiPoint3 afterPosition = camera->GetPosition();
+		const double moved = std::fabs(static_cast<double>(afterPosition.x) - beforePosition.x) +
+			std::fabs(static_cast<double>(afterPosition.y) - beforePosition.y) +
+			std::fabs(static_cast<double>(afterPosition.z) - beforePosition.z);
+		const bool changed = matrixDelta > 1e-4;
+
+		// A rotate that leaves the view where it was must fail here, or a silent no-op reads as a step taken.
+		if (wasReadable && nowReadable && !changed)
+		{
+			errorCode = "rotate_noop";
+			errorMessage = "the editor's RotateBy left the scene camera's view row unchanged, so the step did nothing";
+			return false;
+		}
+
+		char buf[720];
+		std::snprintf(buf, sizeof buf,
+			"{\"step\":[%.4f,%.4f,%.4f],\"via\":\"editor-rotateby\","
+			"\"forward\":[%.4f,%.4f,%.4f],\"wasForward\":[%.4f,%.4f,%.4f],"
+			"\"yaw\":%.6f,\"pitch\":%.6f,\"deltaYaw\":%.6f,\"deltaPitch\":%.6f,"
+			"\"moved\":%.4f,\"matrixDelta\":%.6f,\"changed\":%s,\"viewReadable\":%s}",
+			sx, sy, sz,
+			now[0], now[1], now[2], was[0], was[1], was[2],
+			yaw, pitch, deltaYaw, deltaPitch,
+			moved, matrixDelta, changed ? "true" : "false", (wasReadable && nowReadable) ? "true" : "false");
+		payload = buf;
+		return true;
+	}
+
 	bool RunAimTool(const std::string& args, const FrameTarget& target, std::string& payload,
 		std::string& errorCode, std::string& errorMessage)
 	{

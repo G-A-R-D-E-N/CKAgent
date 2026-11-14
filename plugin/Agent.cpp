@@ -378,8 +378,8 @@ namespace ckagent
 				return false;
 			}
 
-			// Constraint: the lens is this camera object, so it is reached through this tool.
 			if (args.rfind("lens", 0) == 0) return RunLensTool(args, FrameTarget{ reinterpret_cast<void*>(g_camera), nullptr }, payload, errorCode, errorMessage);
+			if (args.rfind("rotate", 0) == 0) return RunRotateTool(args, FrameTarget{ reinterpret_cast<void*>(g_camera), nullptr }, payload, errorCode, errorMessage);
 
 			// Constraint: the slave is copied from the camera node each frame, so a write goes to the object.
 			auto* camera = reinterpret_cast<CameraApi*>(g_camera);

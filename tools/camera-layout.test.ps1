@@ -219,6 +219,33 @@ if (Test-Path -LiteralPath $Frame -PathType Leaf) {
     }
 }
 
+# Regression: a rotate must be reported from the view the editor produced, or a step that did nothing
+# reads as a rotation an orbit can be compared against.
+if (Test-Path -LiteralPath $Frame -PathType Leaf) {
+    $rotateText = Get-Content -LiteralPath $Frame -Raw
+    $rotate = [regex]::Match($rotateText, 'bool RunRotateTool[\s\S]*?\r?\n\t\}')
+
+    $observed['rotateTool'] = if ($rotate.Success) { 'found' } else { 'missing' }
+
+    if (-not $rotate.Success) {
+        $failures.Add("$Frame has no RunRotateTool, so mode=Rotate is missing or unreachable")
+    } else {
+        foreach ($expectation in @(
+                @('camera->RotateBy\(', "the editor's own RotateBy is not what turns the camera"),
+                @('const auto wasMatrix = camera->GetRotate\(\)', 'the matrix is not read before the step'),
+                @('const auto nowMatrix = camera->GetRotate\(\)', 'the matrix is not read after the step'),
+                @('matrixDelta', 'the whole matrix is not compared, so a roll reads as no change'),
+                @('changed = matrixDelta > 1e-4', 'the step is judged by a flag rather than by the matrix difference'),
+                @('ReadSceneView\(', 'the achieved view row is not read, so the rotation cannot be compared'),
+                @('deltaYaw', 'the reply does not report how far the step turned the view'),
+                @('rotate_noop', 'a step that left the view unchanged is not refused'))) {
+            if ($rotate.Value -notmatch $expectation[0]) {
+                $failures.Add("RunRotateTool no longer matches /$($expectation[0])/: $($expectation[1])")
+            }
+        }
+    }
+}
+
 # Regression: the cell reply is a contract between three files - the plugin writes the keys, the server
 # parses them, and the probe asserts them - so a rename or a moved offset in one of them must fail here
 # instead of shipping a load that reports success without naming the cell it opened.

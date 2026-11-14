@@ -376,7 +376,7 @@ matching the shape of `BGS/tools/mcp`. It needs no plugin to run:
 | `ck.commands` | capture the live menu tree into `<state>\commands.json`, or return the cache |
 | `ck.invoke_command` | resolve `File/Save`, `World/PreCombine Geometry For World` or an id, then `WM_COMMAND`; `dry_run` resolves only; refuses while a modal dialog has the window disabled |
 | `ck.save` | copy the plugin to `<state>\backups\<stamp>\`, post `File/Save`, then confirm the file changed — and report `save_not_observed` rather than claiming success |
-| `ck.camera` | read or set the camera pose through the plugin. Reads and writes `BGSRenderWindowCamera` (window at `0x143D491E8`, camera object at `+0xC0`) via its own `SetPosition`/`SetRotation`, because the `NiCamera` at `+0x10` is a slave the editor overwrites every frame — a write there is reverted within 400 ms (measured). Reports `rotate` (the node's nine values) and `sceneRotate` (the slave `NiCamera`'s nine, so the one-row difference is visible in the same reply instead of needing a probe), `positionSynced` (the scene camera's translation matched the request), `rotationOffset` (the pose-dependent `Σ|node − scene|`, since the scene camera's rotation is the node's shifted by one row), and for a lookat the `forward` row and the achieved `aim` plus a `via` naming whether the editor's own `LookAt` or the computed pose aimed it; `mode=orbit` circles a point at a given distance and angle, sets the editor's pivot to that point, and reports the pivot it read back, the radius and the aim; `mode=lens` reads the field of view from the scene camera's own frustum in degrees, and setting `fov` (degrees) or `zoom` (a factor, above 1 zooms in) writes the frustum and reports what was achieved; `camera_transform_unverified` until a cell gives a usable transform; `CKPEUnavailable` without the plugin |
+| `ck.camera` | read or set the camera pose through the plugin. Reads and writes `BGSRenderWindowCamera` (window at `0x143D491E8`, camera object at `+0xC0`) via its own `SetPosition`/`SetRotation`, because the `NiCamera` at `+0x10` is a slave the editor overwrites every frame — a write there is reverted within 400 ms (measured). Reports `rotate` (the node's nine values) and `sceneRotate` (the slave `NiCamera`'s nine, so the one-row difference is visible in the same reply instead of needing a probe), `positionSynced` (the scene camera's translation matched the request), `rotationOffset` (the pose-dependent `Σ|node − scene|`, since the scene camera's rotation is the node's shifted by one row), and for a lookat the `forward` row and the achieved `aim` plus a `via` naming whether the editor's own `LookAt` or the computed pose aimed it; `mode=orbit` circles a point at a given distance and angle, sets the editor's pivot to that point, and reports the pivot it read back, the radius and the aim; `mode=rotate` turns the camera by the step `x/y/z` through the editor's own `RotateBy` and reports the view row, yaw, pitch and their deltas, so an orbit step can be compared against the editor's rotation directly; `mode=lens` reads the field of view from the scene camera's own frustum in degrees, and setting `fov` (degrees) or `zoom` (a factor, above 1 zooms in) writes the frustum and reports what was achieved; `camera_transform_unverified` until a cell gives a usable transform; `CKPEUnavailable` without the plugin |
 | `ck.aim` | turn the camera on a named reference without moving it, so an object is inspected from the view already chosen; optional `distance` backs off to that standoff first; reports the yaw and pitch it wrote, the achieved aim and the vertical offset, and says `aligned=false` when the view still misses. It tilts, because the forward row carries the pitch: the pitch is computed from the position the camera ends up at, so a standoff is aimed from where it leaves the camera, and a target straight above or below keeps the current heading and tilts to the pole rather than being refused. A comma-joined list aims at several references in one call, in order, from the same camera position, so a small area can be scanned without the caller computing poses; each step reports its own yaw, pitch and aim, and a standoff is refused with a chain because it moves the camera. `tools/aim-probe.ps1` asserts that contract against a live editor — level, above, below, directly overhead, at a standoff and as a two-step chain — checking the camera did not move and that the view row re-read afterwards dots the target |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row index, optionally filtered — so a cell can be chosen by name instead of by index |
 | `ck.cell_load` | open a cell by EditorID or display name through the Cell View's own `NM_DBLCLK` handler; reports the row it matched and the cell the render window holds afterwards (`opened.editorId`, `opened.formId`), and returns `cell_not_loaded` naming the cell that stayed when the try changed nothing |
@@ -589,6 +589,24 @@ A chain aims at each reference in the order given, from the position the camera 
   verification fails and the tool writes the pose it computed from the camera position and the target —
   the arithmetic above, measured against the node afterwards. The reply names which path aimed the
   camera so the two are never confused.
+
+### Rotating the camera
+
+`mode=rotate` drives the editor's own `BGSRenderWindowCamera::RotateBy`, which takes the steps as drag-like
+units rather than radians: measured, `100` units is `1` radian, `x` is pitch, `y` is roll and `z` is yaw, and
+the camera does not move. That makes it the reference an orbit step can be checked against, and the three
+paths agree exactly at the same pose:
+
+| Path | View row | Reads as |
+|---|---|---|
+| `set ... yaw 0.5` | `0.8776, 0.4794, 0.0000` | yaw `0.5` |
+| `rotate 0 0 50` | `0.8776, 0.4794, 0.0000` | yaw `0.5`, `deltaYaw 0.5`, `moved 0` |
+| `orbit ... angle 0.5` at radius `120` | `0.8776, 0.4794, 0.0000` | `aim 1.0000` |
+
+`rotate 5 0 0` reads `deltaPitch 0.05` and `rotate 0 0.5 0` (roll) leaves yaw and pitch alone while moving the
+matrix by `0.010025`, so the reply reports `matrixDelta` and `changed` from the whole matrix rather than from
+yaw and pitch. A step that leaves the view where it was fails as `rotate_noop`, and a zero step is
+`bad_args`, so a silent no-op cannot be mistaken for a rotation.
 
 ### Field of view
 
