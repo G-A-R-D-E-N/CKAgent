@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using ModelContextProtocol.Server;
 
 namespace Garden.CkAgent;
@@ -276,7 +278,9 @@ public sealed class CameraTools
                  "an already loaded cell is used); reference matches a reference EditorID, its base object " +
                  "EditorID, or an 8-digit form id; distance defaults to 256 and yaw picks which side to " +
                  "stand on. Returns the matched object, its position, the camera pose and whether the object " +
-                 "sits ahead along the view row. Needs a loaded cell and CKPE with CKAgent.dll installed.")]
+                 "sits ahead along the view row, plus the cell the render window actually holds, so a load " +
+                 "that landed elsewhere is visible in the same reply. Needs a loaded cell and CKPE with " +
+                 "CKAgent.dll installed.")]
     public CameraResult Frame(string reference, string? cell = null, double? distance = null, double? yaw = null)
     {
         if (string.IsNullOrWhiteSpace(reference))
@@ -285,27 +289,28 @@ public sealed class CameraTools
                 "reference is required: a reference EditorID, a base object EditorID, or a form id", null);
         }
 
+        string? requestedCell = null;
+
         if (!string.IsNullOrWhiteSpace(cell))
         {
-            // Constraint: an already loaded cell would satisfy the wait for another one, so the handle must change.
-            string? before = CurrentCellHandle();
+            requestedCell = cell.Trim();
+            CellWatch.OpenCell? before = CellWatch.Read(_plugin);
 
-            if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {cell.Trim()}", out string opened, out string openCode, out string openMessage))
+            // Constraint: an already loaded cell would satisfy the wait for another one, so the handle must change.
+            if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {requestedCell}", out string opened, out string openCode, out string openMessage))
                 return new CameraResult("error", openCode, openMessage, opened);
 
-            bool loaded = false;
-            for (int attempt = 0; attempt < 60 && !loaded; attempt++)
-            {
-                string? now = CurrentCellHandle();
-                loaded = now != null && now != before;
-                if (!loaded) Thread.Sleep(250);
-            }
+            string? matched = CellWatch.Matched(opened);
+            CellWatch.OpenCell? loaded = CellWatch.WaitForChange(_plugin, before, requestedCell, matched);
 
-            if (!loaded)
+            if (loaded == null)
             {
                 return new CameraResult("error", "cell_not_loaded",
-                    $"the editor did not report a new cell for {cell} within 15 s", null);
+                    $"the Cell View accepted {requestedCell}, but the render window still holds " +
+                    $"{CellWatch.Describe(before)} after 15 s",
+                    CellWatch.WithOpened(opened, requestedCell, before));
             }
+
         }
 
         // A yaw without a distance must still frame at the default standoff rather than at zero.
@@ -318,7 +323,11 @@ public sealed class CameraTools
         if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
             return new CameraResult("error", code, message, null);
 
-        return new CameraResult("ok", "ok", command, payload);
+        CellWatch.OpenCell? framed = CellWatch.Read(_plugin);
+        string openedIn = framed?.EditorId ?? framed?.FormId ?? "an unreadable cell";
+
+        return new CameraResult("ok", "ok", $"{command} in {openedIn}",
+            CellWatch.WithOpened(payload, requestedCell, framed));
     }
 
     [McpServerTool(Name = "ck.aim"),
@@ -349,18 +358,6 @@ public sealed class CameraTools
             return new CameraResult("error", code, message, null);
 
         return new CameraResult("ok", "ok", command, payload);
-    }
-
-    private string? CurrentCellHandle()
-    {
-        if (!_plugin.TryCall("cell", out string payload, out _, out _)) return null;
-
-        const string marker = "\"cell\":\"";
-        int at = payload.IndexOf(marker, StringComparison.Ordinal);
-        if (at < 0) return null;
-        at += marker.Length;
-        int end = payload.IndexOf('"', at);
-        return end < 0 ? null : payload.Substring(at, end - at);
     }
 
     [McpServerTool(Name = "ck.camera"),
@@ -522,8 +519,10 @@ public sealed class CellTools
 
     [McpServerTool(Name = "ck.cell_load"),
      Description("Open a cell in the render window by EditorID or display name, exactly as double-clicking " +
-                 "it in the Cell View does, and report the item that was opened. Refuses a name that cannot " +
-                 "travel in one protocol line.")]
+                 "it in the Cell View does, and report the cell the render window actually holds after the " +
+                 "load, so a wrong-cell load is caught in the same reply: the opened EditorID and form id " +
+                 "accompany the matched row, and cell_not_loaded names the cell that stayed when the try did " +
+                 "nothing. Refuses a name that cannot travel in one protocol line.")]
     public CellResult CellLoad(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -534,10 +533,27 @@ public sealed class CellTools
             return new CellResult("error", "invalid_argument",
                 "name must be a single line of at most 200 characters", null);
 
-        if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {trimmed}", out string payload, out string code, out string message))
-            return new CellResult("error", code, message, null);
+        CellWatch.OpenCell? before = CellWatch.Read(_plugin);
 
-        return new CellResult("ok", "ok", $"ui.cellload {trimmed}", payload);
+        if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {trimmed}", out string payload, out string code, out string message))
+            return new CellResult("error", code, message, payload);
+
+        string? matched = CellWatch.Matched(payload);
+        CellWatch.OpenCell? opened = CellWatch.WaitForChange(_plugin, before, trimmed, matched);
+
+        if (opened == null)
+        {
+            return new CellResult("error", "cell_not_loaded",
+                $"the Cell View accepted {trimmed}, but the render window still holds " +
+                $"{CellWatch.Describe(before)} after 15 s",
+                CellWatch.WithOpened(payload, trimmed, before));
+        }
+
+        string openedCell = CellWatch.Describe(opened);
+
+        // Invariant: a display-name row opens a cell whose EditorID differs, so the name is reported, not compared.
+        return new CellResult("ok", "ok", $"ui.cellload {trimmed} -> opened {openedCell}",
+            CellWatch.WithOpened(payload, trimmed, opened));
     }
 
     [McpServerTool(Name = "ck.cell"),
@@ -619,5 +635,107 @@ public sealed class ResolveTools
             return new ResolveResult("error", code, message, null);
 
         return new ResolveResult("ok", "ok", "resolve", payload);
+    }
+}
+
+// Constraint: only the render window's own cell settles a load, because the Cell View only names its click.
+internal static class CellWatch
+{
+    internal sealed record OpenCell(string? Handle, string? EditorId, string? FormId, bool Readable);
+
+    internal static OpenCell? Read(PluginClient plugin)
+    {
+        if (!BlockedEditor.TryCall(plugin, "cell", out string payload, out _, out _)) return null;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+
+            bool readable = root.ValueKind == JsonValueKind.Object &&
+                root.TryGetProperty("readable", out JsonElement flag) && flag.ValueKind == JsonValueKind.True;
+
+            return new OpenCell(Text(root, "cell"), Text(root, "editorId"), Text(root, "formId"), readable);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    // Invariant: the wait ends when the requested cell is held or another one replaced it, never on time alone.
+    internal static OpenCell? WaitForChange(PluginClient plugin, OpenCell? before, string requested, string? matched,
+                                            int attempts = 60, int pauseMs = 250)
+    {
+        for (int attempt = 0; attempt < attempts; attempt++)
+        {
+            OpenCell? now = Read(plugin);
+            if (now != null)
+            {
+                bool replaced = now.Handle != null && now.Handle != before?.Handle;
+                if (replaced || Matches(now, requested, matched)) return now;
+            }
+
+            Thread.Sleep(pauseMs);
+        }
+
+        return null;
+    }
+
+    internal static bool Matches(OpenCell cell, string requested, string? matched)
+    {
+        return cell.EditorId is string id &&
+            (string.Equals(id, requested, StringComparison.OrdinalIgnoreCase) ||
+             (matched != null && string.Equals(id, matched, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    internal static string? Matched(string payload)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            return Text(document.RootElement, "cell");
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    internal static string Describe(OpenCell? cell)
+    {
+        if (cell == null) return "no readable cell";
+        if (cell.EditorId != null) return cell.EditorId;
+        if (cell.FormId != null) return cell.FormId;
+        return "an unreadable cell";
+    }
+
+    internal static string WithOpened(string payload, string? requested, OpenCell? opened)
+    {
+        JsonObject node = new();
+        if (!string.IsNullOrWhiteSpace(payload) && JsonNode.Parse(payload) is JsonObject parsed) node = parsed;
+
+        if (requested != null) node["requested"] = requested;
+        if (opened != null)
+        {
+            node["opened"] = new JsonObject
+            {
+                ["editorId"] = opened.EditorId,
+                ["formId"] = opened.FormId,
+                ["cell"] = opened.Handle,
+                ["readable"] = opened.Readable,
+            };
+        }
+
+        return node.ToJsonString();
+    }
+
+    private static string? Text(JsonElement root, string name)
+    {
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(name, out JsonElement value)) return null;
+        if (value.ValueKind != JsonValueKind.String) return null;
+
+        string? text = value.GetString();
+        return string.IsNullOrEmpty(text) ? null : text;
     }
 }

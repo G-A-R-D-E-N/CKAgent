@@ -68,11 +68,11 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | `ck.generate_previs` | start a headless `-GeneratePreVisData` job |
 | `ck.job_status` | job state, exit code, artifacts, captured `EditorWarnings.txt` |
 | `ck.job_log` | tail a job's console log |
-| `ck.frame` | load a cell and stand the camera in front of a named reference (`distance`, `yaw`) |
+| `ck.frame` | load a cell and stand the camera in front of a named reference (`distance`, `yaw`); reports the cell it actually used |
 | `ck.aim` | turn the camera onto a named reference without moving it; optional `distance` standoff |
 | `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat`, `orbit` a point at a distance and angle |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row |
-| `ck.cell_load` | open a cell exactly as double-clicking it does |
+| `ck.cell_load` | open a cell exactly as double-clicking it does, and report the cell the render window holds afterwards |
 | `ck.cell` | which cell the render window holds, as EditorID and form id, so a load is confirmed rather than assumed |
 | `ck.ui` | passthrough to the in-process control tools below |
 | `ck.resolve` | re-read the render window and camera once, for when anchors go stale after a load |
