@@ -330,6 +330,65 @@ public sealed record ResolveResult(
     string Message,
     string? Payload);
 
+public sealed record CellResult(
+    string Status,
+    string Code,
+    string Message,
+    string? Payload);
+
+// Cell selection must go through the plugin: the Cell View is a live control inside the editor process.
+[McpServerToolType]
+public sealed class CellTools
+{
+    private readonly PluginClient _plugin;
+
+    public CellTools(PluginClient plugin) => _plugin = plugin;
+
+    [McpServerTool(Name = "ck.cells"),
+     Description("List the cells in the editor's Cell View as EditorID, FormID, name and row index, " +
+                 "optionally filtered by EditorID or display name. Needs a loaded master file and the " +
+                 "CKAgent plugin installed.")]
+    public CellResult Cells(string? filter = null)
+    {
+        string command = string.IsNullOrWhiteSpace(filter) ? "ui.cells" : $"ui.cells {filter!.Trim()}";
+        if (!_plugin.TryCall(command, out string payload, out string code, out string message))
+            return new CellResult("error", code, message, null);
+
+        return new CellResult("ok", "ok", command, payload);
+    }
+
+    [McpServerTool(Name = "ck.cell_load"),
+     Description("Open a cell in the render window by EditorID or display name, exactly as double-clicking " +
+                 "it in the Cell View does, and report the item that was opened. Refuses a name that cannot " +
+                 "travel in one protocol line.")]
+    public CellResult CellLoad(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return new CellResult("error", "invalid_argument", "name is required", null);
+
+        string trimmed = name.Trim();
+        if (trimmed.Length > 200 || trimmed.Contains('\n') || trimmed.Contains('\r') || trimmed.Contains('\t'))
+            return new CellResult("error", "invalid_argument",
+                "name must be a single line of at most 200 characters", null);
+
+        if (!_plugin.TryCall($"ui.cellload {trimmed}", out string payload, out string code, out string message))
+            return new CellResult("error", code, message, null);
+
+        return new CellResult("ok", "ok", $"ui.cellload {trimmed}", payload);
+    }
+
+    [McpServerTool(Name = "ck.cell"),
+     Description("Report the cell the render window currently holds, so a load is confirmed rather than " +
+                 "assumed. Returns the render window pointer, the cell pointer and whether one is loaded.")]
+    public CellResult Current()
+    {
+        if (!_plugin.TryCall("cell", out string payload, out string code, out string message))
+            return new CellResult("error", code, message, null);
+
+        return new CellResult("ok", "ok", "cell", payload);
+    }
+}
+
 // Anchors can go stale after a cell load, so the refresh must be askable, not only automatic.
 [McpServerToolType]
 public sealed class ResolveTools

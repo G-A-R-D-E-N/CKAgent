@@ -17,9 +17,11 @@
 
 #include <CKPE.Common.AddressLibrary.h>
 #include <CKPE.PluginAPI.PluginAPI.h>
+#include <EditorAPI/B/BGSRenderWindowCamera.h>
 #include <EditorAPI/T/TES.h>
 
 #include "Agent.h"
+#include "AgentEditorUi.h"
 #include "AgentUi.h"
 #include "Protocol.h"
 
@@ -28,6 +30,9 @@ namespace ckagent
 	namespace
 	{
 		using TES = CKPE::Fallout4::EditorAPI::TES;
+		using CameraApi = CKPE::Fallout4::EditorAPI::BGSRenderWindowCamera;
+		using NiPoint3 = CKPE::Fallout4::EditorAPI::NiPoint3;
+		using NiMatrix43 = CKPE::Fallout4::EditorAPI::NiMatrix43;
 
 		// Every diagnostic must be one line, so the editor's Log Window stays readable.
 		std::string Format(const char* fmt, ...)
@@ -48,13 +53,15 @@ namespace ckagent
 		constexpr std::uintptr_t kCameraTableOffset = 0x2FD4828;        // offset of BGSRenderWindowCamera's class table
 		constexpr std::size_t kCameraSize = 0x88;                       // BGSRenderWindowCamera size, so a read stays inside it
 		constexpr std::uintptr_t kRenderWindowSize = 0x180;             // BGSRenderWindow size, so a read stays inside it
+		constexpr std::uintptr_t kCurrentCellOffset = 0xF8;             // offset of _CurrentCell in BGSRenderWindow (CKPE layout)
 
 		// The view must be driven through the scene camera (findings/ckpe-render-control.md holds the chain).
 		constexpr std::uintptr_t kCameraNiCameraOffset = 0x10;  // offset of the NiCamera pointer inside the camera object
 		constexpr std::uintptr_t kNiCameraTableOffset = 0x3430CC0;  // offset of NiCamera's class table
 		constexpr std::uintptr_t kNiCameraWorld = 0x70;         // offset of NiTransform _World, so rotation lives here
-		constexpr std::uintptr_t kNiCameraTranslate = 0xA0;     // offset of _World m_Translate
-		constexpr std::uintptr_t kNiCameraScale = 0xAC;         // offset of _World m_fScale
+		constexpr std::uintptr_t kNiCameraTranslate = 0xA0;     // offset of _World m_Translate (0x70 + 0x30)
+		constexpr std::uintptr_t kNiCameraScale = 0xAC;         // offset of _World m_fScale (0x70 + 0x3C)
+		constexpr std::uintptr_t kNiRowStride = 4;              // rotation row stride: NiMatrix43 is float[3][4] (CKPE NiMatrix.h)
 		constexpr std::uintptr_t kNiCameraReadable = 0xB0;      // bytes that must be readable from the scene camera
 
 		std::uintptr_t g_imageBase = 0;  // runtime image base, captured at load so each offset rebases correctly
@@ -287,19 +294,20 @@ namespace ckagent
 			return niCamera;
 		}
 
+		// The row stride must be 4: a 3-wide read mixes rows and reports a valid matrix as broken.
 		float RowLength(const float* rotate, int row)
 		{
-			const float x = rotate[row * 3 + 0];
-			const float y = rotate[row * 3 + 1];
-			const float z = rotate[row * 3 + 2];
+			const float x = rotate[row * kNiRowStride + 0];
+			const float y = rotate[row * kNiRowStride + 1];
+			const float z = rotate[row * kNiRowStride + 2];
 			return std::sqrt(x * x + y * y + z * z);
 		}
 
 		float RowDot(const float* rotate, int a, int b)
 		{
-			return rotate[a * 3 + 0] * rotate[b * 3 + 0] +
-				rotate[a * 3 + 1] * rotate[b * 3 + 1] +
-				rotate[a * 3 + 2] * rotate[b * 3 + 2];
+			return rotate[a * kNiRowStride + 0] * rotate[b * kNiRowStride + 0] +
+				rotate[a * kNiRowStride + 1] * rotate[b * kNiRowStride + 1] +
+				rotate[a * kNiRowStride + 2] * rotate[b * kNiRowStride + 2];
 		}
 
 		// A rotation must be orthonormal and scaled before one float is trusted; a half-built scene must be refused.
@@ -351,9 +359,10 @@ namespace ckagent
 				return false;
 			}
 
-			auto* rotate = reinterpret_cast<float*>(niCamera + kNiCameraWorld);
-			auto* translate = reinterpret_cast<float*>(niCamera + kNiCameraTranslate);
-			const float scale = *reinterpret_cast<const float*>(niCamera + kNiCameraScale);
+			// Constraint: the scene camera is a slave, because the editor copies the camera object's node
+			// into it every frame, so a write must go to the camera object and the slave proves it took.
+			auto* camera = reinterpret_cast<CameraApi*>(g_camera);
+			const NiPoint3 before = camera->GetPosition();
 
 			float x = 0, y = 0, z = 0, yaw = 0, pitch = 0;
 			const bool oriented = std::sscanf(args.c_str(), "set %f %f %f %f %f", &x, &y, &z, &yaw, &pitch) == 5;
@@ -361,36 +370,75 @@ namespace ckagent
 
 			if (moved)
 			{
-				translate[0] = x;
-				translate[1] = y;
-				translate[2] = z;
+				camera->SetPosition(NiPoint3{ x, y, z });
 
 				if (oriented)
 				{
-					// Rotation must stay unverified until Gamebryo's basis is confirmed visually.
+					// Rotation must stay unverified until Gamebryo's basis is confirmed against the editor.
 					const float cy = std::cos(yaw), sy = std::sin(yaw);
 					const float cp = std::cos(pitch), sp = std::sin(pitch);
 
-					rotate[0] = cy;          rotate[1] = sy;         rotate[2] = 0;
-					rotate[3] = -sy * cp;    rotate[4] = cy * cp;    rotate[5] = sp;
-					rotate[6] = sy * sp;     rotate[7] = -cy * sp;   rotate[8] = cp;
+					NiMatrix43 rotate{};
+					rotate.m_pEntry[0][0] = cy;         rotate.m_pEntry[0][1] = sy;          rotate.m_pEntry[0][2] = 0;
+					rotate.m_pEntry[1][0] = -sy * cp;   rotate.m_pEntry[1][1] = cy * cp;     rotate.m_pEntry[1][2] = sp;
+					rotate.m_pEntry[2][0] = sy * sp;    rotate.m_pEntry[2][1] = -cy * sp;    rotate.m_pEntry[2][2] = cp;
+					camera->SetRotation(rotate);
 				}
 			}
 
+			const NiPoint3 after = camera->GetPosition();
+			const NiMatrix43 rotation = camera->GetRotate();
+
+			const auto* sceneTranslate = reinterpret_cast<const float*>(niCamera + kNiCameraTranslate);
+			const auto* sceneRotate = reinterpret_cast<const float*>(niCamera + kNiCameraWorld);
+			const float scale = *reinterpret_cast<const float*>(niCamera + kNiCameraScale);
+
+			// The node's world transform must be compared, not its local one: a rotated parent
+			// means a local pose must not be compared against the scene camera.
+			auto* node = camera->GetNode();
+			const auto* worldTranslate = node ? reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraTranslate) : nullptr;
+			const auto* worldRotate = node ? reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraWorld) : nullptr;
+
+			// A pose must be verified as a whole: position alone would pass while the orientation stayed stale.
+			const double drift = worldTranslate
+				? std::fabs(worldTranslate[0] - sceneTranslate[0]) + std::fabs(worldTranslate[1] - sceneTranslate[1]) + std::fabs(worldTranslate[2] - sceneTranslate[2])
+				: 999.0;
+
+			double rotationDrift = worldRotate ? 0.0 : 999.0;
+			for (int row = 0; worldRotate && row < 3; ++row)
+				for (int col = 0; col < 3; ++col)
+					rotationDrift += std::fabs(worldRotate[row * kNiRowStride + col] - sceneRotate[row * kNiRowStride + col]);
+
+			// Invariant: the scene camera carries a fixed local rotation (measured 6.0 total) over the node, so only
+			// translation is comparable directly; the invariant offset is reported instead.
+			const bool synced = drift < 0.5;
+
 			// The reply must name every object it touched: a resolution and a guess have to look different.
-			char buf[640];
+			char buf[1024];
 			std::snprintf(buf, sizeof buf,
-				"{\"camera\":\"0x%llX\",\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"scale\":%.4f,"
-				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],"
-				"\"moved\":%s,\"rotationVerified\":false,"
-				"\"window\":\"0x%llX\",\"cameraObject\":\"0x%llX\",\"resolvedAt\":\"%s\"}",
+				"{\"camera\":\"0x%llX\",\"sceneCamera\":\"0x%llX\","
+				"\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"wasX\":%.4f,\"wasY\":%.4f,\"wasZ\":%.4f,"
+				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"scale\":%.4f,"
+				"\"scene\":[%.4f,%.4f,%.4f],\"rotationOffset\":%.4f,\"positionSynced\":%s,\"moved\":%s,"
+				"\"window\":\"0x%llX\",\"resolvedAt\":\"%s\"}",
+				static_cast<unsigned long long>(g_camera),
 				static_cast<unsigned long long>(niCamera),
-				translate[0], translate[1], translate[2], scale,
-				rotate[0], rotate[1], rotate[2], rotate[3], rotate[4], rotate[5], rotate[6], rotate[7], rotate[8],
+				worldTranslate ? worldTranslate[0] : after.x,
+				worldTranslate ? worldTranslate[1] : after.y,
+				worldTranslate ? worldTranslate[2] : after.z,
+				before.x, before.y, before.z,
+				worldRotate ? worldRotate[0] : 0.0f, worldRotate ? worldRotate[1] : 0.0f, worldRotate ? worldRotate[2] : 0.0f,
+				worldRotate ? worldRotate[kNiRowStride + 0] : 0.0f, worldRotate ? worldRotate[kNiRowStride + 1] : 0.0f, worldRotate ? worldRotate[kNiRowStride + 2] : 0.0f,
+				worldRotate ? worldRotate[kNiRowStride * 2 + 0] : 0.0f, worldRotate ? worldRotate[kNiRowStride * 2 + 1] : 0.0f, worldRotate ? worldRotate[kNiRowStride * 2 + 2] : 0.0f,
+				scale,
+				sceneTranslate[0], sceneTranslate[1], sceneTranslate[2], rotationDrift,
+				synced ? "true" : "false",
 				moved ? "true" : "false",
 				static_cast<unsigned long long>(g_renderWindow),
-				static_cast<unsigned long long>(g_camera),
 				g_cameraWhen);
+
+			// The local matrix must still be read, so a rotated parent stays diagnosable from one reply.
+			(void)rotation;
 
 			payload = buf;
 			return true;
@@ -409,6 +457,25 @@ namespace ckagent
 				static_cast<unsigned long long>(g_camera),
 				resolved ? "" : g_cameraReason.c_str());
 
+			return buf;
+		}
+
+		// A cell load must be observable: the pointer the render window holds is the evidence.
+		std::string ToolCell()
+		{
+			if (!ResolveNow(g_cameraWhen))
+			{
+				char buf[320];
+				std::snprintf(buf, sizeof buf, "{\"resolved\":false,\"cell\":null,\"reason\":\"%s\"}", g_cameraReason.c_str());
+				return buf;
+			}
+
+			const auto cell = *reinterpret_cast<const std::uintptr_t*>(g_renderWindow + kCurrentCellOffset);
+			char buf[320];
+			std::snprintf(buf, sizeof buf, "{\"resolved\":true,\"window\":\"0x%llX\",\"cell\":\"0x%llX\",\"loaded\":%s}",
+				static_cast<unsigned long long>(g_renderWindow),
+				static_cast<unsigned long long>(cell),
+				cell ? "true" : "false");
 			return buf;
 		}
 
@@ -452,6 +519,20 @@ namespace ckagent
 			else if (tool == "resolve")
 			{
 				payload = ToolResolve();
+			}
+			else if (tool == "cell")
+			{
+				payload = ToolCell();
+			}
+			else if (tool.rfind("ui.", 0) == 0)
+			{
+				// Constraint: the editor's own controls must be driven from this thread, where a handler
+				// that opens a dialog or requires a cell load runs inline and the reply reports it.
+				if (!RunEditorTool(tool, args, payload, errorCode, errorMessage))
+				{
+					call.reply = "RPLY " + seq + " ERR " + errorCode + " " + errorMessage + "\n";
+					return;
+				}
 			}
 			else
 			{
