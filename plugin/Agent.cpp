@@ -558,9 +558,9 @@ namespace ckagent
 			{
 				payload = ToolCell();
 			}
-			else if (tool == "frame")
+			else if (tool == "frame" || tool == "aim")
 			{
-				// A frame must run on this thread with resolved anchors, so the lookup and pose stay consistent.
+				// A pose must run on this thread with resolved anchors, so the lookup and the write agree.
 				FrameTarget target;
 				if (!ResolveNow(g_cameraWhen))
 				{
@@ -574,13 +574,11 @@ namespace ckagent
 						*reinterpret_cast<const std::uintptr_t*>(g_renderWindow + kCurrentCellOffset));
 				}
 
-				if (errorCode.empty() && !RunFrameTool(args, target, payload, errorCode, errorMessage))
-				{
-					call.reply = "RPLY " + seq + " ERR " + errorCode + " " + errorMessage + "\n";
-					return;
-				}
+				const bool posed = errorCode.empty() &&
+					(tool == "frame" ? RunFrameTool(args, target, payload, errorCode, errorMessage)
+					                 : RunAimTool(args, target, payload, errorCode, errorMessage));
 
-				if (!errorCode.empty())
+				if (!posed)
 				{
 					call.reply = "RPLY " + seq + " ERR " + errorCode + " " + errorMessage + "\n";
 					return;

@@ -321,6 +321,31 @@ public sealed class CameraTools
         return new CameraResult("ok", "ok", command, payload);
     }
 
+    [McpServerTool(Name = "ck.aim"),
+     Description("Rotate the camera until a named reference in the loaded cell is straight ahead, keeping " +
+                 "the camera where it stands so the object is seen from the view already chosen. reference " +
+                 "matches a reference EditorID, its base object EditorID, or an 8-digit form id; optional " +
+                 "distance backs the camera away to that standoff first. Reports the yaw it wrote, the " +
+                 "achieved aim and the vertical offset: pitch cannot be set, so an object above or below " +
+                 "the camera comes back with aligned=false and a non-zero vertical. Needs a loaded cell " +
+                 "and CKPE with CKAgent.dll installed.")]
+    public CameraResult Aim(string reference, double? distance = null)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+        {
+            return new CameraResult("error", "invalid_argument",
+                "reference is required: a reference EditorID, a base object EditorID, or a form id", null);
+        }
+
+        string command = $"aim {reference.Trim()}";
+        if (distance != null) command += " " + PluginClient.Format(distance.Value);
+
+        if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
+            return new CameraResult("error", code, message, null);
+
+        return new CameraResult("ok", "ok", command, payload);
+    }
+
     private string? CurrentCellHandle()
     {
         if (!_plugin.TryCall("cell", out string payload, out _, out _)) return null;

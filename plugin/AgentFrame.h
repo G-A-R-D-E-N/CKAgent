@@ -14,4 +14,8 @@ namespace ckagent
 
 	bool RunFrameTool(const std::string& args, const FrameTarget& target, std::string& payload,
 		std::string& errorCode, std::string& errorMessage);
+
+	// Constraint: an aim must keep the camera where it is, so the caller sees the view it already chose.
+	bool RunAimTool(const std::string& args, const FrameTarget& target, std::string& payload,
+		std::string& errorCode, std::string& errorMessage);
 }
