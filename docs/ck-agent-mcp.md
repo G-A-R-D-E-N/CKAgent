@@ -564,6 +564,30 @@ reported separately rather than folded into one `aim`. `tools/aim-probe.ps1` ass
 within tolerance of `1`, `aligned` true, `span` equal to the reported `distance`, and the view row it re-reads
 dotting the framed centre at `1.00004` or better.
 
+The 30° elevation is where `frame` could have the same fault `ck.aim` used to have, with the tilt taken from
+a standoff other than the one the camera ends on. It cannot: the position and the pitch are computed from
+the same distance in one expression, so the camera always lands on the sphere at the requested distance and
+the tilt from the centre to it. The reply's own `aim` cannot show a mistake here — a pose derived from a
+wrong pitch still looks straight at the centre — so the probe measures the two fractions that can, the
+height above the centre and the flat part, both of which are fixed by a 30° tilt:
+
+| Cell | Reference | Centre `z` | Asked | `distance` | Height / `distance` | Flat / `distance` | `pitch` | `aim` |
+|---|---|---|---|---|---|---|---|---|
+| `AndrewStation01` | `Loot_Prewar_Safe` | `302.8` | fit | `112.71` | `0.5000` | `0.8660` | `-0.5236` | `1` |
+| `AndrewStation01` | `Loot_Prewar_Safe` | `302.8` | `64` | `64.00` | `0.5000` | `0.8660` | `-0.5236` | `1` |
+| `AndrewStation01` | `Loot_Prewar_Safe` | `302.8` | `2048` | `2048.00` | `0.5000` | `0.8660` | `-0.5236` | `1` |
+| `DmndRadio01` | `Inst305Bulb05` | `212.6` | fit | `62.35` | `0.5000` | `0.8661` | `-0.5236` | `1` |
+| `DiamondCityOrigin` | `DiamondStandsMayor01` | `742.0` | fit | `7219.18` | `0.5000` | `0.8660` | `-0.5236` | `1` |
+| `DiamondCityOrigin` | `DiamondStandsMayor01` | `742.0` | `5000` | `5000.00` | `0.5000` | `0.8660` | `-0.5236` | `1` |
+| `DiamondCityOrigin` | `DiamondStandsMayor01` | `742.0` | `300` | `300.00` | `0.5000` | `0.8660` | `-0.5236` | `1` |
+
+A bulb whose centre sits at `212.6` and a stadium stand at `742.0` give the same fractions at a standoff of
+`62` and one of `7219`, so the tilt depends on the distance asked for and on nothing left over from an
+earlier pose or an absolute height. The probe frames twice on the same reference, at the fitted distance
+and at three times it, and asserts `0.5` and `cos 30°` on both, which is the only reading that would notice
+a tilt taken from the other standoff. A second frame needs `cell` named again once the camera has left the
+cell it was framing in — `frame` moved the camera, and the editor follows the camera.
+
 Framing also fits the lens to the box, because a standoff that clears the object still clips it if the near
 plane sits further out. `ck.frame` writes the near plane at `distance - 1.5 × radius` (floored at `1`) and
 reports `near`, `nearRead`, `far`, `farRead` and `farHeld`:

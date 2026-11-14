@@ -25,7 +25,11 @@ report and the pose are checked separately:
   6. last, ck.frame poses the camera as well as aims it, so its centring is checked the same way: the
      reported aim must be 1.0, the camera must stand exactly the reported distance from the box centre
      it framed, and the view row re-read afterwards must dot that centre - not the object's position,
-     which differs from it whenever the bounding box is offset from the reference's origin.
+     which differs from it whenever the bounding box is offset from the reference's origin;
+  7. that frame runs twice, at the fitted distance and at three times it, because its tilt is a fixed 30
+     degrees: the height above the centre must be half the distance and the flat part cos 30 of it at
+     both, which is the only thing that would show a tilt taken from the other standoff, since a pose
+     derived from a wrong pitch still centres the box and reports aim 1.
 
 The aim direction and the view row are both read back through the plugin, which is the same source the
 server reports from - so this checks behaviour and arithmetic, not the plugin's decode of the scene camera.
@@ -36,6 +40,10 @@ unreachable.
 
 .PARAMETER Cell
 Cell to load for the run. Its reference named by -Reference must exist there.
+
+.PARAMETER Worldspace
+Cell View entry to select before loading, for a cell that is not an interior one. Without it the probe selects
+`Interiors` when the first load is refused, because that is where an interior cell name lives.
 
 .PARAMETER Reference
 Reference EditorID, base object EditorID or form id to aim at. The probe aims by the form id ck.frame
@@ -56,6 +64,7 @@ param(
     [string]$Dll = 'CKAgent.Mcp/bin/Release/net8.0/ckagent.dll',
     [string]$Game = 'D:\SteamLibrary\steamapps\common\Fallout 4',
     [string]$Cell = 'AndrewStation01',
+    [string]$Worldspace = '',
     [string]$Reference = 'Loot_Prewar_Safe',
     [double]$Distance = 512,
     [double]$Tolerance = 1e-3,
@@ -143,19 +152,61 @@ function Get-LoadedCell {
     }
 }
 
+# The Cell View lists one collection at a time, so a name only resolves once the matching entry is selected.
+function Select-CellViewCollection([string]$name) {
+    $pane = @((Invoke-Plugin 'ui.windows') | ConvertFrom-Json) | Where-Object { $_.title -eq 'Cell View' } | Select-Object -First 1
+    if (-not $pane) { return $false }
+
+    $tree = (Invoke-Plugin "ui.tree $($pane.hwnd) 3 40") | ConvertFrom-Json
+    $combo = @($tree.children) | Where-Object { $_.class -eq 'ComboBox' } | Select-Object -First 1
+    if (-not $combo -or -not $combo.items) { return $false }
+
+    $rows = @($combo.items.rows)
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+        if ("$($rows[$i])".Trim() -eq $name) {
+            Invoke-Plugin "ui.select $($combo.hwnd) $i" | Out-Null
+            # The list repopulates behind the combo, and the cell name only resolves once it has.
+            Start-Sleep -Milliseconds 2000
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Open-Cell([string]$name) {
+    try {
+        Invoke-Plugin "ui.cellload $name" | Out-Null
+    } catch {
+        return $false
+    }
+
+    $deadline = (Get-Date).AddSeconds(25)
+    while ((Get-Date) -lt $deadline -and (Get-LoadedCell) -ne $name) { Start-Sleep -Milliseconds 400 }
+    return ((Get-LoadedCell) -eq $name)
+}
+
 $loaded = Get-LoadedCell
 if ($loaded -ne $Cell) {
-    Invoke-Plugin "ui.cellload $Cell" | Out-Null
-    $deadline = (Get-Date).AddSeconds(25)
-    while ((Get-Date) -lt $deadline -and (Get-LoadedCell) -ne $Cell) { Start-Sleep -Milliseconds 400 }
+    if ($Worldspace -and -not (Select-CellViewCollection $Worldspace)) {
+        Write-Output "FAIL the Cell View has no '$Worldspace' entry to select"
+        exit 2
+    }
+
+    $opened = Open-Cell $Cell
+    if (-not $opened -and -not $Worldspace) {
+        # An interior cell is listed only while Interiors is selected, which a previous run can leave behind.
+        if (Select-CellViewCollection 'Interiors') { $opened = Open-Cell $Cell }
+    }
+
     $loaded = Get-LoadedCell
+    if (-not $opened) {
+        Write-Output "FAIL the editor did not open '$Cell'; it reports '$loaded'. The Cell View lists one collection at a time, so pass -Worldspace when the cell is an exterior one."
+        exit 2
+    }
 }
 
 $observed['loadedCell'] = $loaded
-if ($loaded -ne $Cell) {
-    Write-Output "FAIL the editor did not open '$Cell'; it reports '$loaded'"
-    exit 2
-}
 
 # The target's position and form id come from the tool that had to find it, so neither is assumed here.
 $frame = Invoke-Mcp 'ck.frame' (@{ reference = $Reference; distance = 256 } | ConvertTo-Json -Compress)
@@ -428,44 +479,75 @@ if ($chainTargets.Count -lt 2) {
 }
 
 # Framing moves the camera by design, so this runs last and cannot disturb the rotate-in-place cases above.
-$framed = Invoke-Mcp 'ck.frame' (@{ reference = $Reference; yaw = 1.5 } | ConvertTo-Json -Compress)
-$frameRecord = [ordered]@{ request = $Reference; status = $framed.status; code = $framed.code }
-if ($framed.status -ne 'ok') {
-    $failures.Add("frame: ck.frame refused ($($framed.code)): $($framed.message)")
-} else {
+# It runs twice at different distances: a tilt taken from the previous frame's standoff would still centre the
+# object while putting the camera at the wrong height, so the height and the flat part are fractions of the
+# distance asked for - a half and cos 30 - rather than something only the reply knows.
+$frameChecks = @(
+    @{ name = 'frame-fit';   distance = $null },
+    @{ name = 'frame-wider'; distance = 'triple' }
+)
+$fitted = 0.0
+foreach ($check in $frameChecks) {
+    $request = @{ reference = $Reference; yaw = 1.5 }
+    if ("$($check.distance)" -eq 'triple') { $request['distance'] = [math]::Round($fitted * 3, 2) }
+
+    $framed = Invoke-Mcp 'ck.frame' ($request | ConvertTo-Json -Compress)
+    $record = [ordered]@{ name = $check.name; request = $request.reference; asked = $request['distance']; status = $framed.status; code = $framed.code }
+
+    if ($framed.status -ne 'ok') {
+        $failures.Add("$($check.name)`: ck.frame refused ($($framed.code)): $($framed.message)")
+        $observed[$check.name] = $record
+        continue
+    }
+
     $payload = $framed.payload | ConvertFrom-Json
     $pose = Get-Camera
     $centre = @([double]$payload.center[0], [double]$payload.center[1], [double]$payload.center[2])
     $target = @([double]$payload.target[0], [double]$payload.target[1], [double]$payload.target[2])
+    $distance = [double]$payload.distance
     $dx = $centre[0] - [double]$pose.x
     $dy = $centre[1] - [double]$pose.y
     $dz = $centre[2] - [double]$pose.z
     $span = [math]::Sqrt($dx * $dx + $dy * $dy + $dz * $dz)
     $dot = (([double]$pose.forward[0] * $dx) + ([double]$pose.forward[1] * $dy) + ([double]$pose.forward[2] * $dz)) / $span
     $offset = [math]::Sqrt(([math]::Pow($centre[0] - $target[0], 2)) + ([math]::Pow($centre[1] - $target[1], 2)) + ([math]::Pow($centre[2] - $target[2], 2)))
+    # $dz runs from the camera to the centre, so the camera's height above the centre is its negative.
+    $rise = -$dz / $distance
+    $flat = ([math]::Sqrt($dx * $dx + $dy * $dy)) / $distance
 
-    $frameRecord['aim'] = $payload.aim
-    $frameRecord['aligned'] = $payload.aligned
-    $frameRecord['distance'] = $payload.distance
-    $frameRecord['span'] = [math]::Round($span, 2)
-    $frameRecord['forwardDotCentre'] = [math]::Round($dot, 5)
-    $frameRecord['centerOffsetFromTarget'] = [math]::Round($offset, 2)
+    $record['aim'] = $payload.aim
+    $record['aligned'] = $payload.aligned
+    $record['distance'] = $payload.distance
+    $record['span'] = [math]::Round($span, 2)
+    $record['elevationFraction'] = [math]::Round($rise, 4)
+    $record['flatFraction'] = [math]::Round($flat, 4)
+    $record['forwardDotCentre'] = [math]::Round($dot, 5)
+    $record['centerOffsetFromTarget'] = [math]::Round($offset, 2)
+    if ($null -eq $check.distance) { $fitted = $distance }
 
     if ([math]::Abs([double]$payload.aim - 1.0) -gt $Tolerance) {
-        $failures.Add("frame: the reply reports aim $($payload.aim), so the framed centre was not centred")
+        $failures.Add("$($check.name)`: the reply reports aim $($payload.aim), so the framed centre was not centred")
     }
     if ("$($payload.aligned)" -ne 'True') {
-        $failures.Add("frame: the reply says aligned=$($payload.aligned), but frame must centre what it framed")
+        $failures.Add("$($check.name)`: the reply says aligned=$($payload.aligned), but frame must centre what it framed")
     }
-    if ([math]::Abs($span - [double]$payload.distance) -gt 0.05) {
-        $failures.Add("frame: the camera stands $([math]::Round($span, 2)) from the centre it reports, not the $($payload.distance) it reports as its distance")
+    if ([math]::Abs($span - $distance) -gt 0.05) {
+        $failures.Add("$($check.name)`: the camera stands $([math]::Round($span, 2)) from the centre it reports, not the $($payload.distance) it reports as its distance")
     }
     if ($dot -lt 0.9999) {
-        $failures.Add("frame: the view row dots the framed centre at $([math]::Round($dot, 5)), so the object is not centred")
+        $failures.Add("$($check.name)`: the view row dots the framed centre at $([math]::Round($dot, 5)), so the object is not centred")
     }
-}
 
-$observed['frameCentres'] = $frameRecord
+    # The 30-degree elevation is a fraction of the distance, so a tilt taken from another standoff shows here.
+    if ([math]::Abs($rise - 0.5) -gt 0.002) {
+        $failures.Add("$($check.name)`: the camera stands $([math]::Round($rise, 4)) of the distance above the centre, not the half a 30 degree tilt puts it at")
+    }
+    if ([math]::Abs($flat - [math]::Cos([math]::PI / 6)) -gt 0.002) {
+        $failures.Add("$($check.name)`: the flat part is $([math]::Round($flat, 4)) of the distance, not the $([math]::Round([math]::Cos([math]::PI / 6), 4)) a 30 degree tilt gives")
+    }
+
+    $observed[$check.name] = $record
+}
 
 $evidenceJson = [ordered]@{ aim = $observed; failures = @($failures); passed = ($failures.Count -eq 0) } | ConvertTo-Json -Depth 6
 if ($Evidence) { $evidenceJson | Set-Content -LiteralPath $Evidence -Encoding utf8 }
