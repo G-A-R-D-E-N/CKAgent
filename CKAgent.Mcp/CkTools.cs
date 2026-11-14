@@ -312,14 +312,15 @@ public sealed record CameraResult(
 [McpServerToolType]
 public sealed class CameraTools
 {
-    private readonly PluginClient _plugin;
+    private readonly IPluginCaller _plugin;
 
-    public CameraTools(PluginClient plugin) => _plugin = plugin;
+    public CameraTools(IPluginCaller plugin) => _plugin = plugin;
 
     [McpServerTool(Name = "ck.frame"),
      Description("Load a cell and put the camera in front of an object, so a reference can be inspected " +
-                 "without navigating by hand. cell is an EditorID or display name (skipped when omitted, so " +
-                 "an already loaded cell is used); reference matches a reference EditorID, its base object " +
+                 "without navigating by hand. cell is an EditorID or display name (skipped when omitted, and " +
+                 "not reloaded when it names the cell already open, so framing several objects in one cell costs " +
+                 "one load); reference matches a reference EditorID, its base object " +
                  "EditorID, or an 8-digit form id; distance is chosen from the reference's own bounds (2.4 " +
                  "bounding-sphere radii back, 30 degrees above the box centre) and may be overridden, and yaw " +
                  "picks which side to stand on. Returns the matched object, its position, the bounds it was " +
@@ -336,25 +337,34 @@ public sealed class CameraTools
         }
 
         string? requestedCell = null;
+        bool reused = false;
 
         if (!string.IsNullOrWhiteSpace(cell))
         {
             requestedCell = cell.Trim();
             CellWatch.OpenCell? before = CellWatch.Read(_plugin);
 
-            // Constraint: an already loaded cell would satisfy the wait for another one, so the handle must change.
-            if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {requestedCell}", out string opened, out string openCode, out string openMessage))
-                return new CameraResult("error", openCode, openMessage, opened);
-
-            string? matched = CellWatch.Matched(opened);
-            CellWatch.OpenCell? loaded = CellWatch.WaitForChange(_plugin, before, requestedCell, matched);
-
-            if (loaded == null)
+            // Constraint: a cell that is already open must not be opened again, so the load and its wait are skipped.
+            if (CellWatch.IsOpen(before, requestedCell))
             {
-                return new CameraResult("error", "cell_not_loaded",
-                    $"the Cell View accepted {requestedCell}, but the render window still holds " +
-                    $"{CellWatch.Describe(before)} after 15 s",
-                    CellWatch.WithOpened(opened, requestedCell, before));
+                reused = true;
+            }
+            else
+            {
+                // Constraint: an already loaded cell would satisfy the wait for another one, so the handle must change.
+                if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {requestedCell}", out string opened, out string openCode, out string openMessage))
+                    return new CameraResult("error", openCode, openMessage, opened);
+
+                string? matched = CellWatch.Matched(opened);
+                CellWatch.OpenCell? loaded = CellWatch.WaitForChange(_plugin, before, requestedCell, matched);
+
+                if (loaded == null)
+                {
+                    return new CameraResult("error", "cell_not_loaded",
+                        $"the Cell View accepted {requestedCell}, but the render window still holds " +
+                        $"{CellWatch.Describe(before)} after 15 s",
+                        CellWatch.WithOpened(opened, requestedCell, before));
+                }
             }
 
         }
@@ -371,8 +381,9 @@ public sealed class CameraTools
 
         CellWatch.OpenCell? framed = CellWatch.Read(_plugin);
         string openedIn = framed?.EditorId ?? framed?.FormId ?? "an unreadable cell";
+        string note = reused ? " (the cell was already loaded)" : string.Empty;
 
-        return new CameraResult("ok", "ok", $"{command} in {openedIn}",
+        return new CameraResult("ok", "ok", $"{command} in {openedIn}{note}",
             CellWatch.WithOpened(payload, requestedCell, framed));
     }
 
@@ -875,7 +886,7 @@ internal static class CellWatch
 {
     internal sealed record OpenCell(string? Handle, string? EditorId, string? FormId, bool Readable);
 
-    internal static OpenCell? Read(PluginClient plugin)
+    internal static OpenCell? Read(IPluginCaller plugin)
     {
         if (!BlockedEditor.TryCall(plugin, "cell", out string payload, out _, out _)) return null;
 
@@ -896,7 +907,7 @@ internal static class CellWatch
     }
 
     // Invariant: the wait ends when the requested cell is held or another one replaced it, never on time alone.
-    internal static OpenCell? WaitForChange(PluginClient plugin, OpenCell? before, string requested, string? matched,
+    internal static OpenCell? WaitForChange(IPluginCaller plugin, OpenCell? before, string requested, string? matched,
                                             int attempts = 60, int pauseMs = 250)
     {
         for (int attempt = 0; attempt < attempts; attempt++)
@@ -912,6 +923,12 @@ internal static class CellWatch
         }
 
         return null;
+    }
+
+    // Invariant: a name that already matches the loaded cell must not be loaded again, so the wait is never entered.
+    internal static bool IsOpen(OpenCell? cell, string requested)
+    {
+        return cell?.EditorId is string id && string.Equals(id.Trim(), requested.Trim(), StringComparison.OrdinalIgnoreCase);
     }
 
     internal static bool Matches(OpenCell cell, string requested, string? matched)
