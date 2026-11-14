@@ -544,6 +544,26 @@ Three references in that cell framed at their own scale: `Inst305Bulb05` bounds 
 radius `25.98` distance `62.35`, `DefaultLightGreenFungus01NS` radius `20.15` distance `48.36`, and
 `MS14TrailerMarker` radius `27.37` distance `65.68` — the ratio held at `2.4` every time.
 
+The `aim` in that table is measured, not asserted by construction: after posing, `frame` re-reads the scene
+camera's view row and dots it with the direction to the **box centre** it framed, exactly the way `ck.aim`
+measures its own turn, and reports `aligned` (`aim > 0.999`). What it centres is the centre, so `center` and
+`target` in the same reply are not the same point whenever the box is offset from the reference's origin.
+Measured in `AndrewStation01` on `Loot_Prewar_Safe` (`0023F200`, radius `46.96`, position
+`39.5606, 9492.1836, 272.3472`, centre `38.0606, 9490.1836, 302.8472` — `30.60` apart):
+
+| Request | Camera | `distance` | `span` | `aim` | `aligned` |
+|---|---|---|---|---|---|
+| `frame Loot_Prewar_Safe` | `-59.5495, 9490.1836, 359.2026` | `112.71` | `112.71` | `1` | `true` |
+| `frame Loot_Prewar_Safe 0 1.5` | `31.1560, 9392.8184, 359.2026` | `112.71` | `112.71` | `1` | `true` |
+| `frame Loot_Prewar_Safe 300 -2.5` | `246.2037, 9645.6709, 452.8475` | `300.00` | `300.00` | `1` | `true` |
+
+The standoff is always on a circle around the centre, so the aim does not depend on which side is asked for,
+and `span` comes back equal to `distance` every time. Aiming the same camera at the reference's *position*
+instead would put the view row at `0.98138` to the centre — `11°` off — which is why the two points are
+reported separately rather than folded into one `aim`. `tools/aim-probe.ps1` asserts this: reported `aim`
+within tolerance of `1`, `aligned` true, `span` equal to the reported `distance`, and the view row it re-reads
+dotting the framed centre at `1.00004` or better.
+
 Framing also fits the lens to the box, because a standoff that clears the object still clips it if the near
 plane sits further out. `ck.frame` writes the near plane at `distance - 1.5 × radius` (floored at `1`) and
 reports `near`, `nearRead`, `far`, `farRead` and `farHeld`:

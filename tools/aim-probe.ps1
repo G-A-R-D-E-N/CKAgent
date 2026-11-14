@@ -20,7 +20,11 @@ report and the pose are checked separately:
   4. one case asks for a standoff, where the camera is expected to move to exactly that distance and the
      tilt to be computed from the new position rather than the old one;
   5. one case aims at two references in a single call, which must rotate in place for both, report each
-     step's own tilt, finish on the last target, and refuse a standoff that would move the camera.
+     step's own tilt, finish on the last target, and refuse a standoff that would move the camera;
+  6. last, ck.frame poses the camera as well as aims it, so its centring is checked the same way: the
+     reported aim must be 1.0, the camera must stand exactly the reported distance from the box centre
+     it framed, and the view row re-read afterwards must dot that centre - not the object's position,
+     which differs from it whenever the bounding box is offset from the reference's origin.
 
 The aim direction and the view row are both read back through the plugin, which is the same source the
 server reports from - so this checks behaviour and arithmetic, not the plugin's decode of the scene camera.
@@ -382,6 +386,46 @@ if ($chainTargets.Count -lt 2) {
     $observed['chain'] = $record
 }
 
+# Framing moves the camera by design, so this runs last and cannot disturb the rotate-in-place cases above.
+$framed = Invoke-Mcp 'ck.frame' (@{ reference = $Reference; yaw = 1.5 } | ConvertTo-Json -Compress)
+$frameRecord = [ordered]@{ request = $Reference; status = $framed.status; code = $framed.code }
+if ($framed.status -ne 'ok') {
+    $failures.Add("frame: ck.frame refused ($($framed.code)): $($framed.message)")
+} else {
+    $payload = $framed.payload | ConvertFrom-Json
+    $pose = Get-Camera
+    $centre = @([double]$payload.center[0], [double]$payload.center[1], [double]$payload.center[2])
+    $target = @([double]$payload.target[0], [double]$payload.target[1], [double]$payload.target[2])
+    $dx = $centre[0] - [double]$pose.x
+    $dy = $centre[1] - [double]$pose.y
+    $dz = $centre[2] - [double]$pose.z
+    $span = [math]::Sqrt($dx * $dx + $dy * $dy + $dz * $dz)
+    $dot = (([double]$pose.forward[0] * $dx) + ([double]$pose.forward[1] * $dy) + ([double]$pose.forward[2] * $dz)) / $span
+    $offset = [math]::Sqrt(([math]::Pow($centre[0] - $target[0], 2)) + ([math]::Pow($centre[1] - $target[1], 2)) + ([math]::Pow($centre[2] - $target[2], 2)))
+
+    $frameRecord['aim'] = $payload.aim
+    $frameRecord['aligned'] = $payload.aligned
+    $frameRecord['distance'] = $payload.distance
+    $frameRecord['span'] = [math]::Round($span, 2)
+    $frameRecord['forwardDotCentre'] = [math]::Round($dot, 5)
+    $frameRecord['centerOffsetFromTarget'] = [math]::Round($offset, 2)
+
+    if ([math]::Abs([double]$payload.aim - 1.0) -gt $Tolerance) {
+        $failures.Add("frame: the reply reports aim $($payload.aim), so the framed centre was not centred")
+    }
+    if ("$($payload.aligned)" -ne 'True') {
+        $failures.Add("frame: the reply says aligned=$($payload.aligned), but frame must centre what it framed")
+    }
+    if ([math]::Abs($span - [double]$payload.distance) -gt 0.05) {
+        $failures.Add("frame: the camera stands $([math]::Round($span, 2)) from the centre it reports, not the $($payload.distance) it reports as its distance")
+    }
+    if ($dot -lt 0.9999) {
+        $failures.Add("frame: the view row dots the framed centre at $([math]::Round($dot, 5)), so the object is not centred")
+    }
+}
+
+$observed['frameCentres'] = $frameRecord
+
 $evidenceJson = [ordered]@{ aim = $observed; failures = @($failures); passed = ($failures.Count -eq 0) } | ConvertTo-Json -Depth 6
 if ($Evidence) { $evidenceJson | Set-Content -LiteralPath $Evidence -Encoding utf8 }
 
@@ -390,6 +434,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output 'PASS ck.aim kept the camera in place and centred every target: level, above, below, overhead, at a standoff, and in a two-step chain'
+Write-Output 'PASS ck.aim kept the camera in place and centred every target: level, above, below, overhead, at a standoff, and in a two-step chain; and ck.frame centred the box centre it framed'
 Write-Output $evidenceJson
 exit 0

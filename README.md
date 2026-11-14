@@ -286,8 +286,11 @@ directly over one reference, calls `ck.aim` through the server, and asserts the 
 aim is 1.0, the tilt equals the angle between camera and target, and the view row re-read afterwards dots
 that direction. Another case asks for a standoff, where the camera must settle exactly that far away and
 the tilt must come from the new position, and a last one aims at two references in a single call, which
-must turn to each in order and finish on the last. It loads the cell itself when needed; exit 2 means the
-cell or the reference was not found.
+must turn to each in order and finish on the last. A last case frames a reference with `ck.frame` and checks
+its centring the same way — `aim` `1`, `aligned`, the camera exactly the reported `distance` from the box
+centre, and the re-read view row dotting that centre — because framing reports an aim too, and it is the box
+centre rather than the reference's position that gets centred. It loads the cell itself when needed; exit 2
+means the cell or the reference was not found.
 
 `tools/cell-probe.ps1` covers the naming contract. It picks cells from the Cell View's own list, opens each
 with `ui.cellload`, and asserts `ck.cell` names the cell that was opened: `editorId` equal to the row,
