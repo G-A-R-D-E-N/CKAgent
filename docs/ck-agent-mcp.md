@@ -288,6 +288,15 @@ in the second CreateNamedPipe path, not in the string. Until that is fixed the o
 it) but does not admit the low host that needs it, and the docs do not claim otherwise; the strict default is
 unaffected, and `dotnet ckagent.dll` is the launch that works from this workspace.
 
+`tools/low-client-probe.ps1` keeps this covered. It runs `ckagent.exe` — the low client — through the protocol and
+asserts that the apphost really came up low, that the default pipe refuses it with `pipe_denied` naming both
+switches, that the refusal check rejects two fabricated replies (a plain `CKPEUnavailable` and a `pipe_denied`
+that names nothing), that `--allow-low-pipe` reaches `ckagent-low` and `ck.cell` answers, and that a medium
+`dotnet` host still reports `pluginPipe: ckagent`. `-StrictOnly` asserts only the refusal, which is the run that
+belongs on a machine that deliberately keeps the low pipe closed. Measured now: the strict half passes, and the
+full run exits 3 on the opt-in half because the loose pipe does not admit this client yet — the probe is red
+exactly where the feature is.
+
 One trap found while measuring: CKPE loads every DLL in `CKPEPlugins`, so a backup copy left beside the plugin
 competes for the pipe name. The log showed the second module dying with `CreateNamedPipe failed (231)`
 (`ERROR_PIPE_BUSY`) while the first served, which makes any pipe result read as if the new build were loaded when

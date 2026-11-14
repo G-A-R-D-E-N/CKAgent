@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Constraint: the arguments must arrive in a file, because PowerShell drops JSON quotes for native commands.
-const [, , dll, tool, argsFile = "", game = "", timeoutMs = "20000"] = process.argv;
+const [, , dll, tool, argsFile = "", game = "", timeoutMs = "20000", extra = ""] = process.argv;
 if (!dll || !tool) {
-  console.error("usage: node mcp-call.mjs <ckagent.dll> <tool> [args.json] [game] [timeout-ms]");
+  console.error("usage: node mcp-call.mjs <ckagent.dll|ckagent.exe> <tool> [args.json] [game] [timeout-ms] [extra-args]");
   process.exit(2);
 }
 
@@ -22,11 +22,17 @@ if (argsFile) {
   }
 }
 
-const child = spawn(
-  "dotnet",
-  [dll, ...(game ? ["--game", game] : []), "--state", join(tmpdir(), "ckagent-probe")],
-  { stdio: ["pipe", "pipe", "inherit"] },
-);
+// Invariant: an .exe is the apphost itself, and its integrity level is what a low-client probe is measuring.
+const hostArgs = [
+  ...(game ? ["--game", game] : []),
+  ...(extra ? extra.split(" ").filter(Boolean) : []),
+  "--state",
+  join(tmpdir(), "ckagent-probe"),
+];
+
+const child = dll.toLowerCase().endsWith(".exe")
+  ? spawn(dll, hostArgs, { stdio: ["pipe", "pipe", "inherit"] })
+  : spawn("dotnet", [dll, ...hostArgs], { stdio: ["pipe", "pipe", "inherit"] });
 
 let buffer = "";
 const pending = new Map();

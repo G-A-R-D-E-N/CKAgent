@@ -334,6 +334,12 @@ fails if either world refuses to prepare, if `level` writes a pitch other than `
 cases still report a centred target, so the tilt is shown to follow the camera and the target rather than the
 cell.
 
+`tools/low-client-probe.ps1` covers the transport from the low side. It runs `ckagent.exe` as the low client and
+asserts the default pipe refuses it with a message naming both switches, that `--allow-low-pipe` reaches
+`ckagent-low` and `ck.cell` answers, and that a medium `dotnet` host still reaches `ckagent`. `-StrictOnly` runs
+just the refusal, for a machine that keeps the low pipe closed. Today the strict half passes and the full run
+exits 3 on the opt-in half, which is the open transport bug written down where it will be noticed.
+
 `tools/cell-probe.ps1` covers the naming contract. It picks cells from the Cell View's own list, opens each
 with `ui.cellload`, and asserts `ck.cell` names the cell that was opened: `editorId` equal to the row,
 `formId` equal to the row's form id, the placement fields present, grid `0, 0` for an interior cell, a
