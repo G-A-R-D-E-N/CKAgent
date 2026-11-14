@@ -290,7 +290,7 @@ public sealed class CameraTools
             // Constraint: an already loaded cell would satisfy the wait for another one, so the handle must change.
             string? before = CurrentCellHandle();
 
-            if (!_plugin.TryCall($"ui.cellload {cell.Trim()}", out string opened, out string openCode, out string openMessage))
+            if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {cell.Trim()}", out string opened, out string openCode, out string openMessage))
                 return new CameraResult("error", openCode, openMessage, opened);
 
             bool loaded = false;
@@ -315,7 +315,7 @@ public sealed class CameraTools
         if (distance != null) command += " " + PluginClient.Format(distance.Value);
         if (yaw != null) command += " " + PluginClient.Format(yaw.Value);
 
-        if (!_plugin.TryCall(command, out string payload, out string code, out string message))
+        if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
             return new CameraResult("error", code, message, null);
 
         return new CameraResult("ok", "ok", command, payload);
@@ -413,7 +413,7 @@ public sealed class CameraTools
                 return new CameraResult("error", "invalid_argument", "mode must be get or set", null);
         }
 
-        if (!_plugin.TryCall(command, out string payload, out string code, out string message))
+        if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
             return new CameraResult("error", code, message, null);
 
         return new CameraResult("ok", "ok", command, payload);
@@ -454,7 +454,7 @@ public sealed class CellTools
     public CellResult Cells(string? filter = null)
     {
         string command = string.IsNullOrWhiteSpace(filter) ? "ui.cells" : $"ui.cells {filter!.Trim()}";
-        if (!_plugin.TryCall(command, out string payload, out string code, out string message))
+        if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
             return new CellResult("error", code, message, null);
 
         return new CellResult("ok", "ok", command, payload);
@@ -474,7 +474,7 @@ public sealed class CellTools
             return new CellResult("error", "invalid_argument",
                 "name must be a single line of at most 200 characters", null);
 
-        if (!_plugin.TryCall($"ui.cellload {trimmed}", out string payload, out string code, out string message))
+        if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {trimmed}", out string payload, out string code, out string message))
             return new CellResult("error", code, message, null);
 
         return new CellResult("ok", "ok", $"ui.cellload {trimmed}", payload);
@@ -485,7 +485,7 @@ public sealed class CellTools
                  "assumed. Returns the render window pointer, the cell pointer and whether one is loaded.")]
     public CellResult Current()
     {
-        if (!_plugin.TryCall("cell", out string payload, out string code, out string message))
+        if (!BlockedEditor.TryCall(_plugin, "cell", out string payload, out string code, out string message))
             return new CellResult("error", code, message, null);
 
         return new CellResult("ok", "ok", "cell", payload);
@@ -518,6 +518,8 @@ public sealed class UiTools
                  "ui.command runs a menu command by path (ui.command File/Data) or by id, ui.click presses " +
                  "a dialog button by caption, ui.modals lists dialogs and flags the hidden one blocking the " +
                  "editor (ui.modals reveal <hwnd> shows it), ui.windows and ui.tree inspect, ui.menu dumps it. " +
+                 "A call refused while a hidden dialog blocks the editor is retried after that dialog is " +
+                 "revealed, and the failure names the dialog if the block remains. " +
                  "Args is the tool's own argument tail, e.g. method=ui.notify, args=0x1234 dblclk 0.")]
     public UiResult Ui(string method, string? args = null)
     {
@@ -531,7 +533,7 @@ public sealed class UiTools
             return new UiResult("error", "invalid_argument", "args must be a single line", null);
 
         string command = tail.Length == 0 ? chosen : chosen + " " + tail;
-        if (!_plugin.TryCall(command, out string payload, out string code, out string message))
+        if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
             return new UiResult("error", code, message, null);
 
         return new UiResult("ok", "ok", command, payload);
@@ -552,7 +554,7 @@ public sealed class ResolveTools
                  "reason they did not validate. Requires CKPE plus CKAgent.dll in <game>\\CKPEPlugins\\.")]
     public ResolveResult Resolve()
     {
-        if (!_plugin.TryCall("resolve", out string payload, out string code, out string message))
+        if (!BlockedEditor.TryCall(_plugin, "resolve", out string payload, out string code, out string message))
             return new ResolveResult("error", code, message, null);
 
         return new ResolveResult("ok", "ok", "resolve", payload);
