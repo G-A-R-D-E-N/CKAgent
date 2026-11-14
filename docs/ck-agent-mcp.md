@@ -1,5 +1,10 @@
 # Controlling the Creation Kit from an MCP agent
 
+> This copy ships with the CKAgent repository, and so do the CKPE anchor findings it cites
+> (`docs/ckpe-render-control.md`). The memory probes it names live in the GARDEN-Tools monorepo under
+> `tools/ck-surface-probe/`, because they read the editor from outside the process. Build steps are in the
+> repository `README.md`.
+
 Investigation into driving `CreationKit.exe` so an AI agent can operate the live editor the way a
 person does: select forms, place references, move the render camera, generate precombines, navmesh
 and finalise cells.
@@ -147,7 +152,7 @@ tested it and **refuted it**:
   top-level window and child found nothing.
 
 So the window is not the control; it is the object that owns the view. The corpus has no decompile of
-either class, so the chain comes from the 1.11.246.0 image itself (`findings/ckpe-render-control.md`
+either class, so the chain comes from the 1.11.246.0 image itself (`docs/ckpe-render-control.md`
 holds the addresses):
 
 - `TESRenderControl`'s constructor has exactly one caller, `TESPreviewControl`'s, and
