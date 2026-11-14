@@ -298,6 +298,144 @@ namespace ckagent
 		return true;
 	}
 
+	// Invariant: the frustum is read through the slave NiCamera, which is the one the editor renders with.
+	struct Lens
+	{
+		float left = 0.0f, right = 0.0f, top = 0.0f, bottom = 0.0f, nearPlane = 0.0f, farPlane = 0.0f;
+		bool ortho = false;
+		unsigned viewMode = 0;
+	};
+
+	namespace
+	{
+		Lens ReadLens(CameraApi* camera, CKPE::Fallout4::EditorAPI::NiCamera* slave)
+		{
+			Lens lens;
+			const auto& frustum = slave->GetFrustum();
+			lens.left = frustum.m_fLeft; lens.right = frustum.m_fRight;
+			lens.top = frustum.m_fTop; lens.bottom = frustum.m_fBottom;
+			lens.nearPlane = frustum.m_fNear; lens.farPlane = frustum.m_fFar;
+			lens.ortho = frustum.m_bOrtho;
+			lens.viewMode = static_cast<unsigned>(camera->GetViewMode());
+			return lens;
+		}
+
+		// Constraint: the frustum holds the tangents of the half-angles, so degrees come back out of atan.
+		double DegreesOf(double tangent)
+		{
+			return std::atan(tangent) * 57.29577951308232;
+		}
+
+		double VerticalFov(const Lens& lens)
+		{
+			return DegreesOf(lens.top) - DegreesOf(lens.bottom);
+		}
+
+		double HorizontalFov(const Lens& lens)
+		{
+			return DegreesOf(lens.right) - DegreesOf(lens.left);
+		}
+	}
+
+	bool RunLensTool(const std::string& args, const FrameTarget& target, std::string& payload,
+		std::string& errorCode, std::string& errorMessage)
+	{
+		auto* camera = reinterpret_cast<CameraApi*>(target.camera);
+		if (!camera)
+		{
+			errorCode = "camera_unavailable";
+			errorMessage = "the render window has no camera object";
+			return false;
+		}
+
+		auto* slave = camera->GetCamera();
+		if (!slave)
+		{
+			errorCode = "camera_unavailable";
+			errorMessage = "the render window camera has no scene NiCamera to read the lens from";
+			return false;
+		}
+
+		const std::vector<std::string> words = SplitWords(args);
+		const Lens before = ReadLens(camera, slave);
+
+		float requestedFov = 0.0f;
+		float zoomFactor = 0.0f;
+		const bool settingFov = words.size() > 2 && words[1] == "fov";
+		const bool zooming = words.size() > 2 && words[1] == "zoom";
+		if (settingFov) requestedFov = static_cast<float>(std::atof(words[2].c_str()));
+		if (zooming) zoomFactor = static_cast<float>(std::atof(words[2].c_str()));
+
+		if (settingFov && !(requestedFov > 1.0f && requestedFov < 179.0f))
+		{
+			errorCode = "bad_args";
+			errorMessage = "fov must be between 1 and 179 degrees";
+			return false;
+		}
+
+		// Constraint: the editor's Zoom leaves the frustum unchanged (measured), so a zoom scales the field of view.
+		if (zooming && !(zoomFactor > 0.0f && zoomFactor <= 20.0f))
+		{
+			errorCode = "bad_args";
+			errorMessage = "zoom must be a factor between 0 and 20, where 1 leaves the lens alone";
+			return false;
+		}
+
+		if ((settingFov || zooming) && before.viewMode != 0)
+		{
+			errorCode = "not_perspective";
+			errorMessage = "the render window is in orthographic view, where a field of view does not apply";
+			return false;
+		}
+
+		const double wantedFov = settingFov ? static_cast<double>(requestedFov)
+			: zooming ? VerticalFov(before) / static_cast<double>(zoomFactor) : 0.0;
+
+		if (settingFov || zooming)
+		{
+			if (!(wantedFov > 1.0 && wantedFov < 179.0))
+			{
+				errorCode = "bad_args";
+				errorMessage = "that zoom would push the field of view outside 1 to 179 degrees";
+				return false;
+			}
+		}
+
+		if (settingFov || zooming)
+		{
+			// Constraint: the result must be judged by a fresh read, not by the value that was sent.
+			const auto was = slave->GetFrustum();
+			const double height = static_cast<double>(was.m_fTop) - was.m_fBottom;
+			const double aspect = std::fabs(height) > 1e-6 ? (was.m_fRight - was.m_fLeft) / height : 1.0;
+
+			const double half = std::tan(wantedFov * 0.5 * 0.017453292519943295);
+			auto wanted = was;
+			wanted.m_fTop = static_cast<float>(half);
+			wanted.m_fBottom = static_cast<float>(-half);
+			wanted.m_fRight = static_cast<float>(half * aspect);
+			wanted.m_fLeft = static_cast<float>(-half * aspect);
+			slave->SetFrustum(wanted);
+			camera->Update();
+		}
+
+		const Lens after = ReadLens(camera, slave);
+		const double fov = VerticalFov(after);
+		const double applied = (settingFov || zooming) ? std::fabs(fov - wantedFov) < 0.05 : true;
+
+		char buf[720];
+		std::snprintf(buf, sizeof buf,
+			"{\"fov\":%.4f,\"horizontalFov\":%.4f,\"wasFov\":%.4f,\"requested\":%.4f,"
+			"\"frustum\":[%.5f,%.5f,%.5f,%.5f,%.4f,%.4f],\"ortho\":%s,\"viewMode\":\"%s\","
+			"\"zoom\":%.4f,\"applied\":%s,\"changed\":%s}",
+			fov, HorizontalFov(after), VerticalFov(before), settingFov ? requestedFov : 0.0f,
+			after.left, after.right, after.top, after.bottom, after.nearPlane, after.farPlane,
+			after.ortho ? "true" : "false", after.viewMode == 0 ? "perspective" : "orthographic",
+			zoomFactor, applied ? "true" : "false",
+			std::fabs(fov - VerticalFov(before)) > 0.01 ? "true" : "false");
+		payload = buf;
+		return true;
+	}
+
 	bool RunAimTool(const std::string& args, const FrameTarget& target, std::string& payload,
 		std::string& errorCode, std::string& errorMessage)
 	{

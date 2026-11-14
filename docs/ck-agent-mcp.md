@@ -376,7 +376,7 @@ matching the shape of `BGS/tools/mcp`. It needs no plugin to run:
 | `ck.commands` | capture the live menu tree into `<state>\commands.json`, or return the cache |
 | `ck.invoke_command` | resolve `File/Save`, `World/PreCombine Geometry For World` or an id, then `WM_COMMAND`; `dry_run` resolves only; refuses while a modal dialog has the window disabled |
 | `ck.save` | copy the plugin to `<state>\backups\<stamp>\`, post `File/Save`, then confirm the file changed — and report `save_not_observed` rather than claiming success |
-| `ck.camera` | read or set the camera pose through the plugin. Reads and writes `BGSRenderWindowCamera` (window at `0x143D491E8`, camera object at `+0xC0`) via its own `SetPosition`/`SetRotation`, because the `NiCamera` at `+0x10` is a slave the editor overwrites every frame — a write there is reverted within 400 ms (measured). Reports `rotate` (the node's nine values) and `sceneRotate` (the slave `NiCamera`'s nine, so the one-row difference is visible in the same reply instead of needing a probe), `positionSynced` (the scene camera's translation matched the request), `rotationOffset` (the pose-dependent `Σ|node − scene|`, since the scene camera's rotation is the node's shifted by one row), and for a lookat the `forward` row and the achieved `aim` plus a `via` naming whether the editor's own `LookAt` or the computed pose aimed it; `mode=orbit` circles a point at a given distance and angle, sets the editor's pivot to that point, and reports the pivot it read back, the radius and the aim; `camera_transform_unverified` until a cell gives a usable transform; `CKPEUnavailable` without the plugin |
+| `ck.camera` | read or set the camera pose through the plugin. Reads and writes `BGSRenderWindowCamera` (window at `0x143D491E8`, camera object at `+0xC0`) via its own `SetPosition`/`SetRotation`, because the `NiCamera` at `+0x10` is a slave the editor overwrites every frame — a write there is reverted within 400 ms (measured). Reports `rotate` (the node's nine values) and `sceneRotate` (the slave `NiCamera`'s nine, so the one-row difference is visible in the same reply instead of needing a probe), `positionSynced` (the scene camera's translation matched the request), `rotationOffset` (the pose-dependent `Σ|node − scene|`, since the scene camera's rotation is the node's shifted by one row), and for a lookat the `forward` row and the achieved `aim` plus a `via` naming whether the editor's own `LookAt` or the computed pose aimed it; `mode=orbit` circles a point at a given distance and angle, sets the editor's pivot to that point, and reports the pivot it read back, the radius and the aim; `mode=lens` reads the field of view from the scene camera's own frustum in degrees, and setting `fov` (degrees) or `zoom` (a factor, above 1 zooms in) writes the frustum and reports what was achieved; `camera_transform_unverified` until a cell gives a usable transform; `CKPEUnavailable` without the plugin |
 | `ck.aim` | turn the camera on a named reference without moving it, so an object is inspected from the view already chosen; optional `distance` backs off to that standoff first; reports the yaw and pitch it wrote, the achieved aim and the vertical offset, and says `aligned=false` when the view still misses. It tilts, because the forward row carries the pitch: the pitch is computed from the position the camera ends up at, so a standoff is aimed from where it leaves the camera, and a target straight above or below keeps the current heading and tilts to the pole rather than being refused. A comma-joined list aims at several references in one call, in order, from the same camera position, so a small area can be scanned without the caller computing poses; each step reports its own yaw, pitch and aim, and a standoff is refused with a chain because it moves the camera. `tools/aim-probe.ps1` asserts that contract against a live editor — level, above, below, directly overhead, at a standoff and as a two-step chain — checking the camera did not move and that the view row re-read afterwards dots the target |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row index, optionally filtered — so a cell can be chosen by name instead of by index |
 | `ck.cell_load` | open a cell by EditorID or display name through the Cell View's own `NM_DBLCLK` handler; reports the row it matched and the cell the render window holds afterwards (`opened.editorId`, `opened.formId`), and returns `cell_not_loaded` naming the cell that stayed when the try changed nothing |
@@ -589,6 +589,23 @@ A chain aims at each reference in the order given, from the position the camera 
   verification fails and the tool writes the pose it computed from the camera position and the target —
   the arithmetic above, measured against the node afterwards. The reply names which path aimed the
   camera so the two are never confused.
+
+### Field of view
+
+The scene camera's frustum holds the tangents of the half-angles, so the field of view is `atan` of them, and
+that is what `mode=lens` reports. Measured on `DmndRadio01` at the default view: `frustum`
+`[-0.83910, 0.83910, 0.53950, -0.53950, 10, 300000]` reads as horizontal `80.0000` and vertical `56.6941`
+degrees. Setting `fov 30` writes `[±0.41675, ±0.26795]` and reads back exactly `30`, `fov 90` reads back
+`90` with horizontal `114.5215`, and `fov 56.6941` restores the default frustum. `zoom 2` halves the field
+of view to `28.3471`, `zoom 0.5` doubles it back to `56.6941`, and a factor of `0`, `-1` or `30` is refused,
+as is a field of view at or outside `1` and `179` degrees.
+
+Two limits are worth stating. The editor's own `Zoom` call is not used: measured with and without a pivot
+set, it left the frustum unchanged, so a zoom here is a field-of-view scale and a factor above `1` zooms
+in. And the linear aspect `(right-left)/(top-bottom)` is preserved, not the angular one, so at `fov 30` the
+horizontal field is `45.2474` rather than the `42.3` that scaling both angles would give. An orthographic
+view is refused with `not_perspective`; that path is implemented but was not exercised, because the render
+window stayed in perspective.
 
 The tool and the probe read different nodes, which is why their matrices are not equal. `camera get`
 reports `rotate` from the camera's own node — the matrix `MoveLocal` moves along, confirmed by

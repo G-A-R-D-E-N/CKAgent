@@ -378,8 +378,10 @@ namespace ckagent
 				return false;
 			}
 
-			// Constraint: the scene camera is a slave, because the editor copies the camera object's node
-			// into it every frame, so a write must go to the camera object and the slave proves it took.
+			// Constraint: the lens is this camera object, so it is reached through this tool.
+			if (args.rfind("lens", 0) == 0) return RunLensTool(args, FrameTarget{ reinterpret_cast<void*>(g_camera), nullptr }, payload, errorCode, errorMessage);
+
+			// Constraint: the slave is copied from the camera node each frame, so a write goes to the object.
 			auto* camera = reinterpret_cast<CameraApi*>(g_camera);
 			auto* node = camera->GetNode();
 			const auto* worldTranslate = node ? reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraTranslate) : nullptr;
@@ -491,8 +493,7 @@ namespace ckagent
 			// comparable directly; the rotation difference is reported as a pose-dependent offset instead.
 			const bool synced = drift < 0.5;
 
-			// The reply must name every object it touched: a resolution and a guess have to look different.
-			// A lookat must say which path aimed it, so the editor's own answer is never mistaken for a computed one.
+			// The reply must name every object it touched, and a lookat must say which path aimed it.
 			const char* via = !looking ? "direct" : (lookatFromEditor ? "lookat-editor" : "lookat-computed");
 
 			char buf[1400];

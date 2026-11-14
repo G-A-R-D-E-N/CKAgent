@@ -186,6 +186,39 @@ if (Test-Path -LiteralPath $Frame -PathType Leaf) {
     }
 }
 
+# Regression: a lens must be read from the rendering frustum and judged by a fresh read.
+if (Test-Path -LiteralPath $Frame -PathType Leaf) {
+    $lensText = Get-Content -LiteralPath $Frame -Raw
+    $lens = [regex]::Match($lensText, 'bool RunLensTool[\s\S]*?\r?\n\t\}')
+
+    $observed['lensTool'] = if ($lens.Success) { 'found' } else { 'missing' }
+
+    if (-not $lens.Success) {
+        $failures.Add("$Frame has no RunLensTool, so mode=Lens is missing or unreachable")
+    } else {
+        foreach ($expectation in @(
+                @('camera->GetCamera\(\)', 'the lens is not read through the slave NiCamera, which is what renders'),
+                @('slave->GetFrustum\(\)', 'the frustum is not read from the slave NiCamera'),
+                @('VerticalFov\(', 'the field of view is not derived from the frustum at all'),
+                @('slave->SetFrustum\(wanted\)', 'the field of view is never written to the frustum'),
+                @('const Lens after = ReadLens\(camera, slave\)', 'the result is not re-read, so a refused write would report success'),
+                @('requestedFov > 1\.0f && requestedFov < 179\.0f', 'the field of view has no range check'),
+                @('zoomFactor > 0\.0f && zoomFactor <= 20\.0f', 'the zoom factor has no range check'),
+                @('not_perspective', 'an orthographic view is not refused, where a field of view does not apply'),
+                @('applied\b', 'the reply does not say whether the lens reached the value asked for'))) {
+            if ($lens.Value -notmatch $expectation[0]) {
+                $failures.Add("RunLensTool no longer matches /$($expectation[0])/: $($expectation[1])")
+            }
+        }
+
+        # The editor's own Zoom leaves the perspective frustum unchanged (measured), so using it would make
+        # the control a no-op that still reports a zoom factor.
+        if ($lens.Value -match 'camera->Zoom\(') {
+            $failures.Add("RunLensTool calls the editor's Zoom, which leaves the frustum unchanged, so the zoom would do nothing")
+        }
+    }
+}
+
 # Regression: the cell reply is a contract between three files - the plugin writes the keys, the server
 # parses them, and the probe asserts them - so a rename or a moved offset in one of them must fail here
 # instead of shipping a load that reports success without naming the cell it opened.

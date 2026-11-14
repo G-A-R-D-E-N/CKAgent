@@ -372,12 +372,18 @@ public sealed class CameraTools
                  "mode=Orbit circles the world point x/y/z at the given distance and angle (radians, angle 0 " +
                  "looks along +X), optionally tilted, sets the editor's own pivot to that point so its own " +
                  "orbit and zoom continue from there, and reports the pivot it read back plus the radius " +
-                 "and aim it achieved. Every mode returns the resulting position " +
+                 "and aim it achieved. mode=Lens reads the field of view from the scene camera's own " +
+                 "frustum and reports it in degrees, with the raw frustum and the view mode; passing fov " +
+                 "sets a vertical field of view in degrees, and passing zoom scales the field of view by a " +
+                 "factor, where above 1 zooms in; both report what was achieved rather than what was asked " +
+                 "for, and the editor's own Zoom call is not used because it leaves the frustum unchanged. " +
+                 "Every mode returns the resulting position " +
                  "and matrix. Needs a loaded cell and reports camera_transform_unverified when the scene " +
                  "camera has no usable transform yet. " +
                  "Requires CKPE plus CKAgent.dll in <game>\\CKPEPlugins\\.")]
     public CameraResult Camera(string mode = "get", double? x = null, double? y = null, double? z = null,
-                               double? yaw = null, double? pitch = null, double? distance = null)
+                               double? yaw = null, double? pitch = null, double? distance = null,
+                               double? fov = null, double? zoom = null)
     {
         string command;
 
@@ -405,6 +411,20 @@ public sealed class CameraTools
                       $"{PluginClient.Format(yaw.Value)} {PluginClient.Format(pitch.Value)}"
                     : $"camera set {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)}";
                 break;
+
+            case "lens":
+            {
+                if (fov != null && zoom != null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "fov and zoom change the same lens; pass one", null);
+                }
+
+                command = "camera lens";
+                if (fov != null) command += " fov " + PluginClient.Format(fov.Value);
+                else if (zoom != null) command += " zoom " + PluginClient.Format(zoom.Value);
+                break;
+            }
 
             case "move":
             {

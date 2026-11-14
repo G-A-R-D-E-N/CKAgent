@@ -119,6 +119,26 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the test accepted the fixed 256 standoff that ignores the object size' }
           $global:LASTEXITCODE = 0
 
+      - name: A lens that trusts its own write is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentFrame.cpp -Raw) -replace 'const Lens after = ReadLens\(camera, slave\)', 'const Lens after = before' |
+            Set-Content drift/AgentFrame.cpp
+          ./tools/camera-layout.test.ps1 -Frame drift/AgentFrame.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted a lens report that never re-reads the frustum it just wrote' }
+          $global:LASTEXITCODE = 0
+
+      - name: A lens with no range check is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentFrame.cpp -Raw) -replace 'requestedFov > 1\.0f && requestedFov < 179\.0f', 'requestedFov > 0\.0f' |
+            Set-Content drift/AgentFrame.cpp
+          ./tools/camera-layout.test.ps1 -Frame drift/AgentFrame.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted a field of view with no upper bound' }
+          $global:LASTEXITCODE = 0
+
       - name: A cross-check narrowed to one pose is rejected
         shell: pwsh
         run: |
