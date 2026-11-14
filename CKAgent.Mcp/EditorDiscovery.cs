@@ -4,7 +4,8 @@ namespace Garden.CkAgent;
 
 internal static class EditorDiscovery
 {
-    internal const string MainWindowClass = "Creation Kit";
+    // Invariant: the frame's class carries the build ("Creation Kit Fallout 4 [v1.11.246.0]"), so the class is not addressable.
+    internal const string MainWindowClassPrefix = "Creation Kit";
 
     // It must be this install's executable; ids posted to another install edit the wrong data.
     internal static Process? FindEditor(string creationKitPath)
@@ -34,17 +35,27 @@ internal static class EditorDiscovery
     internal static IntPtr FindMainWindow(uint processId)
     {
         IntPtr found = IntPtr.Zero;
+        IntPtr fallback = IntPtr.Zero;
 
+        // Invariant: the frame is found by owning a menu bar, the way the plugin does it, and not by class.
         Win32.EnumWindows((hWnd, _) =>
         {
             if (Win32.ProcessId(hWnd) != processId) return true;
-            if (!string.Equals(Win32.ClassName(hWnd), MainWindowClass, StringComparison.Ordinal)) return true;
+            if (Win32.GetMenu(hWnd) == IntPtr.Zero) return true;
 
-            found = hWnd;
-            return false;
+            if (Win32.IsWindowVisible(hWnd) && Win32.IsWindowEnabled(hWnd))
+            {
+                found = hWnd;
+                return false;
+            }
+
+            if (fallback == IntPtr.Zero && Win32.ClassName(hWnd).StartsWith(MainWindowClassPrefix, StringComparison.Ordinal))
+                fallback = hWnd;
+
+            return true;
         }, IntPtr.Zero);
 
-        return found;
+        return found != IntPtr.Zero ? found : fallback;
     }
 
     internal static bool IsPluginPipeAvailable()
