@@ -40,6 +40,7 @@ namespace ckagent
 		{
 			std::string title;
 			std::string buttons;
+			std::string dismiss;
 		};
 
 		// A blocking modal must be nameable from anywhere, including a status line.

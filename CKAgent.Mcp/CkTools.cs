@@ -23,7 +23,8 @@ public sealed record EditorStatusResult(
     bool PluginPipeAvailable,
     string StateDirectory,
     string? BlockedBy,
-    IReadOnlyList<string>? ModalButtons);
+    IReadOnlyList<string>? ModalButtons,
+    string? DismissBy);
 
 public sealed record CommandListResult(
     string Status,
@@ -73,8 +74,9 @@ public sealed class CkTools
     [McpServerTool(Name = "ck.status"),
      Description("Report the installed Creation Kit and the running editor: build, process, main window, " +
                  "command manifest age, and whether the in-process CKAgent plugin is listening. When a dialog " +
-                 "is blocking the editor it reports the dialog title and the captions of its buttons, so a " +
-                 "caller knows which one to click.")]
+                 "is blocking the editor it reports the dialog title, the captions of its buttons, and the " +
+                 "caption the automatic dismissal will press, so a caller can see both what is available and " +
+                 "what will happen.")]
     public EditorStatusResult Status()
     {
         var document = _commands.Load();
@@ -86,7 +88,7 @@ public sealed class CkTools
                 "no CreationKit.exe for this install is running", false, null, null, null,
                 _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
                 document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-                false, _paths.StateDirectory, null, null);
+                false, _paths.StateDirectory, null, null, null);
         }
 
         IntPtr window = EditorDiscovery.FindMainWindow((uint)process.Id);
@@ -94,6 +96,7 @@ public sealed class CkTools
 
         string? blockedBy = null;
         IReadOnlyList<string>? modalButtons = null;
+        string? dismissBy = null;
         if (pipe && _plugin.TryCall("status", out string pluginStatus, out _, out _))
         {
             try
@@ -115,11 +118,17 @@ public sealed class CkTools
 
                     modalButtons = captions;
                 }
+
+                if (root.TryGetProperty("dismissBy", out JsonElement dismiss) && dismiss.ValueKind == JsonValueKind.String)
+                {
+                    dismissBy = dismiss.GetString();
+                }
             }
             catch (JsonException)
             {
                 blockedBy = null;
                 modalButtons = null;
+                dismissBy = null;
             }
         }
 
@@ -133,7 +142,7 @@ public sealed class CkTools
             window != IntPtr.Zero ? window.ToInt64() : null,
             _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
             document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-            pipe, _paths.StateDirectory, blockedBy, modalButtons);
+            pipe, _paths.StateDirectory, blockedBy, modalButtons, dismissBy);
     }
 
     [McpServerTool(Name = "ck.commands"),

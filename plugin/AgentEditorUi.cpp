@@ -454,6 +454,18 @@ namespace ckagent
 			return {};
 		}
 
+		// Invariant: the dismissal abandons the pending work, so it presses Cancel or Close, never OK.
+		std::string DismissCaption(HWND dialog)
+		{
+			const wchar_t* const safe[] = { L"Cancel", L"Close" };
+			for (int i = 0; i < 2; ++i)
+			{
+				HWND button = FindButtonByText(dialog, U8(safe[i]));
+				if (button && IsWindow(button) && IsWindowEnabled(button)) return U8(safe[i]);
+			}
+			return "WM_CLOSE";
+		}
+
 		// Invariant: a blocked caller is told which caption dismisses the dialog, not only its title.
 		ModalBlock HiddenModal()
 		{
@@ -468,6 +480,7 @@ namespace ckagent
 					if (ch == '"') ch = '\'';
 				}
 				out.buttons = ButtonsJson(h, 6);
+				out.dismiss = DismissCaption(h);
 				return out;
 			}
 			return out;
@@ -900,19 +913,25 @@ namespace ckagent
 				return false;
 			}
 
-			const wchar_t* const safe[] = { L"Cancel", L"Close" };
-			for (int i = 0; i < 2; ++i)
+			// Constraint: the caption comes from the same choice status reports, so the two cannot disagree.
+			const std::string caption = DismissCaption(dialog);
+			if (caption == "WM_CLOSE")
 			{
-				HWND button = FindButtonByText(dialog, U8(safe[i]));
-				if (!button || !IsWindowEnabled(button)) continue;
-				PostMessageW(button, BM_CLICK, 0, 0);
-				payload = DismissedJson(U8(safe[i]), argText(0));
+				PostMessageW(dialog, WM_CLOSE, 0, 0);
+				payload = DismissedJson(caption, argText(0));
 				return true;
 			}
 
-			// Constraint: a modal with no Cancel button must still end, and WM_CLOSE is its own Esc.
-			PostMessageW(dialog, WM_CLOSE, 0, 0);
-			payload = DismissedJson("WM_CLOSE", argText(0));
+			HWND button = FindButtonByText(dialog, caption);
+			if (!button || !IsWindowEnabled(button))
+			{
+				errorCode = "button_disabled";
+				errorMessage = "the dismissal button went away: " + caption;
+				return false;
+			}
+
+			PostMessageW(button, BM_CLICK, 0, 0);
+			payload = DismissedJson(caption, argText(0));
 			return true;
 		}
 

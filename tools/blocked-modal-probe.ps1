@@ -310,6 +310,14 @@ if ($reported.Count -eq 0) {
     }
 }
 
+# Regression: a caption status promises but the dismissal never presses sends the caller to a dead button.
+$observed['statusDismissBy'] = $statusNow.dismissBy
+if (-not $statusNow.dismissBy) {
+    $failures.Add('status did not say which caption its own dismissal will press')
+} elseif ($statusNow.dismissBy -ne 'WM_CLOSE' -and $captions -notcontains $statusNow.dismissBy) {
+    $failures.Add("status says the dismissal presses '$($statusNow.dismissBy)', which the dialog does not have ('$($captions -join ', ')')")
+}
+
 # 2a. Control: a call that succeeds must leave the dialog hidden. Without this, the next assertion would
 # only show that some call changed the dialog, not that the retry path did.
 $control = Invoke-Mcp 'ck.ui' '{"method":"ui.cells"}'
@@ -382,6 +390,7 @@ if ($KeepModal) {
         } else {
             $refusedStatus = Get-Status
             $observed['refusalBlockedBy'] = $refusedStatus.blockedBy
+            $observed['refusalDismissBy'] = $refusedStatus.dismissBy
             if (-not $refusedStatus.blockedBy) {
                 $failures.Add('status stopped naming the dialog before the skipped-dismissal phase')
             }
@@ -411,6 +420,9 @@ if ($KeepModal) {
             $observed['dismissedBy'] = $dismissal.by
             if ($dismissal.dismissed -ne $true) {
                 $failures.Add('ui.dismiss did not report dismissing the dialog')
+            }
+            if ("$($dismissal.by)" -ne "$($refusedStatus.dismissBy)") {
+                $failures.Add("status promised the dismissal would press '$($refusedStatus.dismissBy)' but it pressed '$($dismissal.by)'")
             }
             Start-Sleep -Milliseconds 700
             $released = (Get-Status).blockedBy

@@ -359,7 +359,7 @@ if ((Test-Path -LiteralPath $Plugin -PathType Leaf) -and (Test-Path -LiteralPath
     }
 
     # Every key the reply carries, as the plugin emits it inside the JSON format strings.
-    $emitted = @('resolved', 'window', 'cell', 'loaded', 'readable', 'editorId', 'formId', 'interior', 'gridX', 'gridY', 'hasWorldSpace', 'blockedBy', 'modalButtons')
+    $emitted = @('resolved', 'window', 'cell', 'loaded', 'readable', 'editorId', 'formId', 'interior', 'gridX', 'gridY', 'hasWorldSpace', 'blockedBy', 'modalButtons', 'dismissBy')
     foreach ($key in $emitted) {
         if (-not $cellPlugin.Contains('\"' + $key + '\"')) {
             $failures.Add("$Plugin no longer emits '$key' in its replies")

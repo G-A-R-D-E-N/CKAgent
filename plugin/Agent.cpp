@@ -143,14 +143,15 @@ namespace ckagent
 			std::snprintf(buf, sizeof buf,
 				"{\"supported\":true,\"loaded\":%s,\"interior\":%s,"
 				"\"gridX\":%d,\"gridY\":%d,\"hasWorldSpace\":%s,"
-				"\"pid\":%lu,\"onEditorThread\":%s,\"blockedBy\":\"%s\",\"modalButtons\":%s}",
+				"\"pid\":%lu,\"onEditorThread\":%s,\"blockedBy\":\"%s\",\"modalButtons\":%s,"
+				"\"dismissBy\":\"%s\"}",
 				where.empty ? "false" : "true",
 				where.interior ? "true" : "false",
 				where.gridX, where.gridY,
 				where.hasWorldSpace ? "true" : "false",
 				GetCurrentProcessId(),
 				g_threadOk.load() ? "true" : "false",
-				modal.title.c_str(), modal.buttons.c_str());
+				modal.title.c_str(), modal.buttons.c_str(), modal.dismiss.c_str());
 			return buf;
 		}
 
