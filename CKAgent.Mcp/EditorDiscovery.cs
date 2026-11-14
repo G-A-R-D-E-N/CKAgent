@@ -58,6 +58,56 @@ internal static class EditorDiscovery
         return found != IntPtr.Zero ? found : fallback;
     }
 
+    // Invariant: a running editor this host cannot see is not a missing editor, so the reply must say which it is.
+    internal static (string Code, string Message) DescribeStatus(bool processFound, bool hasWindow, bool windowVisible)
+    {
+        if (!processFound)
+        {
+            return hasWindow
+                ? ("editor_invisible",
+                   "CreationKit is running, but this host cannot open its process or enumerate it, so it was found " +
+                   "by its frame window instead: the editor sits at another integrity level or session, and window " +
+                   "messages are blocked between levels, so the plugin pipe is the way in")
+                : ("editor_not_running",
+                   "no CreationKit.exe for this install is running, and no frame window was found");
+        }
+
+        if (!hasWindow)
+        {
+            return ("window_not_ready", "editor is running but has not created its main window yet");
+        }
+
+        if (!windowVisible)
+        {
+            return ("editor_invisible",
+                "editor is running and its main window exists, but the window is not visible, so menu and " +
+                "control calls have nothing to reach until it is shown; the plugin pipe answers regardless");
+        }
+
+        return ("ok", "editor is running and its command menu is reachable");
+    }
+
+    // Constraint: a low-integrity host is handed no editor process, so the frame window is the only evidence there is.
+    internal static IntPtr FindFrameWindow(out uint processId)
+    {
+        IntPtr found = IntPtr.Zero;
+        uint owner = 0;
+
+        // Invariant: the frame is the window that owns a menu and carries the build in its class, as the plugin finds it.
+        Win32.EnumWindows((hWnd, _) =>
+        {
+            if (!Win32.ClassName(hWnd).StartsWith(MainWindowClassPrefix, StringComparison.Ordinal)) return true;
+            if (Win32.GetMenu(hWnd) == IntPtr.Zero) return true;
+
+            found = hWnd;
+            owner = Win32.ProcessId(hWnd);
+            return false;
+        }, IntPtr.Zero);
+
+        processId = owner;
+        return found;
+    }
+
     internal static bool IsPluginPipeAvailable()
     {
         try

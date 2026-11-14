@@ -209,7 +209,16 @@ A denial still explains itself: `pipe_denied` reads the client's own token, repo
 the likely cause — a plugin older than the low-labelled pipe, or a pipe held by another account.
 
 Working files — the command manifest, save backups, job logs — live in `%LOCALAPPDATA%\ckagent` and survive
-a server restart. A job left `running` is reported `interrupted` rather than silently forgotten.
+a server restart. When that folder cannot be written the host steps to `%LOCALAPPDATA%\Temp\Low\ckagent`, then
+`%TEMP%\ckagent`, then a `state\` folder beside `ckagent.exe`, and names the one it used in `stateDirectoryNote`.
+That matters here: a low-integrity apphost is refused every profile folder on this machine, measured, so it ends
+on the folder beside itself and says so instead of failing to start. A job left `running` is reported `interrupted`
+rather than silently forgotten.
+
+The same low-integrity apphost is handed no `CreationKit` process at all, so `ck.status` finds the editor by its
+frame window and answers `editor_invisible` with the real pid and title rather than `editor_not_running`. Window
+messages do not cross integrity levels, so in that mode every call goes over the plugin pipe — which works, and
+was measured from that host.
 
 ### 4. Launch the editor
 

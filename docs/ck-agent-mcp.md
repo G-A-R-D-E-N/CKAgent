@@ -267,6 +267,47 @@ When a denial does happen, `pipe_denied` reads the client's own token and names 
 decides the cause: at low it means the loaded plugin predates the low-labelled pipe or the pipe belongs to
 another user; at medium it means the pipe belongs to another account or a higher-integrity process.
 
+### The state directory the apphost can actually write
+
+The host keeps `commands.json`, `jobs\` and `backups\` in a state directory, and at low integrity the folder it
+would like is one it cannot write, so it now walks a list instead of failing at startup. Without `--state` the
+order is `%LOCALAPPDATA%\ckagent`, then `%LOCALAPPDATA%\Temp\Low\ckagent` — the low-integrity temp Windows
+provides at logon — then `%TEMP%\ckagent`, then a `state\` folder beside `ckagent.exe`. A candidate is accepted
+only after a probe file has been written and deleted in it: a low-integrity process is refused a write into a
+medium-labelled folder even when that folder exists and can be read, so existence proves nothing.
+
+Measured on this host, with the apphost started from the workspace: `%LOCALAPPDATA%\ckagent`,
+`%LOCALAPPDATA%\Temp\Low\ckagent`, `%TEMP%\ckagent` (`C:\WINDOWS\TEMP`) and a folder in the Steam game
+directory are each refused with `UnauthorizedAccessException`, while the workspace itself carries
+`Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)` and takes the write, so the host settles on
+`CKAgent\CKAgent.Mcp\bin\Release\net8.0\state`. Before the fallback it exited with status 2 and
+`state directory C:\Users\...\ckagent is not writable`, which an MCP client sees as a server that will not start.
+
+The choice is reported twice — on stderr at startup and as `stateDirectoryNote` on every `ck.status` reply, whose
+`stateDirectory` names the folder in use. An explicit `--state` is the caller's decision, so it is used or refused
+and never replaced; only the default list falls back.
+
+### An invisible editor is not a missing one
+
+`ck.status` separates four cases rather than two. `editor_not_running` means nothing was found by any route;
+`window_not_ready` means the process exists and has no frame-shaped window yet; `editor_invisible` covers the two
+ways an editor can be up while a host cannot reach it — a frame window that is not visible, and an editor the host
+cannot see at all. Both are reported as running, with the pid, title and window handle taken from the frame.
+
+Measured, low-integrity apphost at `ckagent.exe` beside this file, editor up:
+
+| Host | `Process.GetProcessesByName("CreationKit")` | frame window | reply |
+|---|---|---|---|
+| medium (`dotnet ckagent.dll`) | pid `37744` | `0x2A0DB4`, visible | `ok` |
+| low (`ckagent.exe`) | empty | `0x2A0DB4`, visible | `editor_invisible`, pid `37744` |
+
+The low host was handed no process at all — not even a module path it could not read — so `ck.status` now falls
+back to enumerating top-level windows and accepts the one whose class starts with `Creation Kit` and that owns a
+menu. That window yields the pid (`GetWindowThreadProcessId`, no process access), the title and the handle. Window
+messages are blocked between integrity levels by UIPI, so menu and UI calls cannot work from there; the plugin pipe
+is the way in, and it does: the same low host returned `pluginPipeAvailable: true`, read `blockedBy` from the
+plugin, and answered `ck.cell` over the low-labelled pipe.
+
 Tool naming, namespaced so it does not collide with the existing `fo4editor` server:
 
 | Tool | Surface | What it does |

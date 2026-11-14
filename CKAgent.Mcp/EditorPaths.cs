@@ -5,12 +5,13 @@ namespace Garden.CkAgent;
 /// Paths must come from --ck/--game: the MCP client launches us from any directory.
 public sealed class EditorPaths
 {
-    private EditorPaths(string creationKitPath, string gameDirectory, string stateDirectory)
+    private EditorPaths(string creationKitPath, string gameDirectory, string stateDirectory, string? stateNote)
     {
         CreationKitPath = creationKitPath;
         GameDirectory = gameDirectory;
         DataDirectory = Path.Combine(gameDirectory, "Data");
         StateDirectory = stateDirectory;
+        StateDirectoryNote = stateNote;
         ManifestPath = Path.Combine(stateDirectory, "commands.json");
         JobsDirectory = Path.Combine(stateDirectory, "jobs");
         BackupsDirectory = Path.Combine(stateDirectory, "backups");
@@ -20,6 +21,9 @@ public sealed class EditorPaths
     public string GameDirectory { get; }
     public string DataDirectory { get; }
     public string StateDirectory { get; }
+
+    // Constraint: the note is null for a first-choice folder and otherwise names why the host settled elsewhere.
+    public string? StateDirectoryNote { get; }
     public string ManifestPath { get; }
     public string JobsDirectory { get; }
     public string BackupsDirectory { get; }
@@ -75,31 +79,31 @@ public sealed class EditorPaths
             return false;
         }
 
-        string stateRoot;
+        var candidates = new List<string>();
         if (!string.IsNullOrWhiteSpace(state))
         {
-            try { stateRoot = Path.GetFullPath(state); }
+            // Constraint: an explicit --state is the caller's decision, so it is used or refused, never replaced.
+            try { candidates.Add(Path.GetFullPath(state)); }
             catch (Exception) { error = "--state is not a valid path"; return false; }
         }
         else
         {
-            stateRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ckagent");
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            candidates.Add(Path.Combine(profile, "ckagent"));
+            candidates.Add(Path.Combine(profile, "Temp", "Low", "ckagent"));
+            candidates.Add(Path.Combine(Path.GetTempPath(), "ckagent"));
+
+            // Constraint: the host's own folder is the last resort, because a low-integrity host sits in a low-labelled folder.
+            candidates.Add(Path.Combine(AppContext.BaseDirectory, "state"));
         }
 
-        try
+        if (!StateFolder.Choose(candidates, out string stateRoot, out string stateNote))
         {
-            Directory.CreateDirectory(stateRoot);
-            Directory.CreateDirectory(Path.Combine(stateRoot, "jobs"));
-            Directory.CreateDirectory(Path.Combine(stateRoot, "backups"));
-        }
-        catch (Exception exception)
-        {
-            error = $"state directory {stateRoot} is not writable: {exception.Message}";
+            error = $"no state directory is writable: {stateNote}";
             return false;
         }
 
-        paths = new EditorPaths(exe, gameDirectory, stateRoot);
+        paths = new EditorPaths(exe, gameDirectory, stateRoot, stateNote.Length == 0 ? null : stateNote);
         return true;
     }
 }

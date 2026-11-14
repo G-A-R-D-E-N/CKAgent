@@ -37,6 +37,11 @@ if (!EditorPaths.TryCreate(creationKit, gameDirectory, stateDirectory, out Edito
     return 2;
 }
 
+if (paths!.StateDirectoryNote != null)
+{
+    Console.Error.WriteLine(paths.StateDirectoryNote);
+}
+
 var builder = Host.CreateApplicationBuilder();
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 builder.Services.AddSingleton(paths!);

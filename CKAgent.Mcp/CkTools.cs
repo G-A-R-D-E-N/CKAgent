@@ -6,26 +6,6 @@ using ModelContextProtocol.Server;
 
 namespace Garden.CkAgent;
 
-public sealed record EditorStatusResult(
-    string Status,
-    string Code,
-    string Message,
-    bool Running,
-    int? Pid,
-    string? MainWindowTitle,
-    long? MainWindowHandle,
-    string CreationKitPath,
-    string GameDirectory,
-    string? EditorVersion,
-    int ManifestCommands,
-    string? ManifestBuild,
-    string? ManifestCapturedUtc,
-    bool PluginPipeAvailable,
-    string StateDirectory,
-    string? BlockedBy,
-    IReadOnlyList<string>? ModalButtons,
-    string? DismissBy);
-
 public sealed record CommandListResult(
     string Status,
     string Code,
@@ -76,22 +56,36 @@ public sealed class CkTools
                  "command manifest age, and whether the in-process CKAgent plugin is listening. When a dialog " +
                  "is blocking the editor it reports the dialog title, the captions of its buttons, and the " +
                  "caption the automatic dismissal will press, so a caller can see both what is available and " +
-                 "what will happen.")]
+                 "what will happen. A window that exists but is hidden is reported as editor_invisible, not as a " +
+                 "missing editor, and stateDirectoryNote names a state folder used after the default was refused.")]
     public EditorStatusResult Status()
     {
         var document = _commands.Load();
         var process = EditorDiscovery.FindEditor(_paths.CreationKitPath);
 
+        // Constraint: a host handed no editor process still has the frame window, which proves the editor is up.
+        IntPtr frameOnly = IntPtr.Zero;
+        int frameOnlyPid = 0;
         if (process == null)
         {
-            return new EditorStatusResult("ok", "editor_not_running",
-                "no CreationKit.exe for this install is running", false, null, null, null,
-                _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
-                document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-                false, _paths.StateDirectory, null, null, null);
+            frameOnly = EditorDiscovery.FindFrameWindow(out uint framePid);
+            frameOnlyPid = (int)framePid;
         }
 
-        IntPtr window = EditorDiscovery.FindMainWindow((uint)process.Id);
+        if (process == null && frameOnly == IntPtr.Zero)
+        {
+            return new EditorStatusResult("ok", "editor_not_running",
+                "no CreationKit.exe for this install is running, and no frame window was found",
+                false, null, null, null,
+                _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
+                document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
+                false, _paths.StateDirectory, null, null, null, _paths.StateDirectoryNote);
+        }
+
+        IntPtr window = process != null
+            ? EditorDiscovery.FindMainWindow((uint)process.Id)
+            : frameOnly;
+        int? pid = process?.Id ?? frameOnlyPid;
         bool pipe = EditorDiscovery.IsPluginPipeAvailable();
 
         string? blockedBy = null;
@@ -132,17 +126,16 @@ public sealed class CkTools
             }
         }
 
-        string code = window != IntPtr.Zero ? "ok" : "window_not_ready";
-        string message = window != IntPtr.Zero
-            ? "editor is running and its command menu is reachable"
-            : "editor is running but has not created its main window yet";
+        bool visible = window != IntPtr.Zero && Win32.IsWindowVisible(window);
+        (string code, string message) =
+            EditorDiscovery.DescribeStatus(process != null, window != IntPtr.Zero, visible);
 
-        return new EditorStatusResult("ok", code, message, true, process.Id,
+        return new EditorStatusResult("ok", code, message, true, pid,
             window != IntPtr.Zero ? Win32.WindowText(window) : null,
             window != IntPtr.Zero ? window.ToInt64() : null,
             _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
             document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-            pipe, _paths.StateDirectory, blockedBy, modalButtons, dismissBy);
+            pipe, _paths.StateDirectory, blockedBy, modalButtons, dismissBy, _paths.StateDirectoryNote);
     }
 
     [McpServerTool(Name = "ck.commands"),
