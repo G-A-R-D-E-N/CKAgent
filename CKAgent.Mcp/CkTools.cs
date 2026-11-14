@@ -60,7 +60,8 @@ public sealed class CkTools
                  "missing editor, and stateDirectoryNote names a state folder used after the default was refused. " +
                  "The reply also states this client's own integrity level, elevation and enabled privileges, and " +
                  "which evidence found the editor — its process, its frame window, or neither — because a host at " +
-                 "low integrity is handed no editor process at all.")]
+                 "low integrity is handed no editor process at all. pluginPipe names the pipe the plugin answered " +
+                 "on, and lowIntegrityPipeAllowed says whether this host may try the low-labelled one at all.")]
     public EditorStatusResult Status()
     {
         var document = _commands.Load();
@@ -70,6 +71,7 @@ public sealed class CkTools
         IntPtr frameOnly = EditorDiscovery.FindFrameWindow(out uint framePid);
         int frameOnlyPid = (int)framePid;
         var view = ClientView.Describe(process != null, frameOnly != IntPtr.Zero);
+        string? probedPipe = EditorDiscovery.ProbePipe(_paths.LowIntegrityPipeAllowed);
 
         if (process == null && frameOnly == IntPtr.Zero)
         {
@@ -78,15 +80,16 @@ public sealed class CkTools
                 false, null, null, null,
                 _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
                 document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-                false, _paths.StateDirectory, null, null, null, _paths.StateDirectoryNote,
-                view.Integrity, view.Elevated, view.Privileges, view.SeesProcess, view.SeesWindow, view.Sight);
+                probedPipe != null, _paths.StateDirectory, null, null, null, _paths.StateDirectoryNote,
+                view.Integrity, view.Elevated, view.Privileges, view.SeesProcess, view.SeesWindow, view.Sight,
+                probedPipe, _paths.LowIntegrityPipeAllowed);
         }
 
         IntPtr window = process != null
             ? EditorDiscovery.FindMainWindow((uint)process.Id)
             : frameOnly;
         int? pid = process?.Id ?? frameOnlyPid;
-        bool pipe = EditorDiscovery.IsPluginPipeAvailable();
+        bool pipe = probedPipe != null;
 
         string? blockedBy = null;
         IReadOnlyList<string>? modalButtons = null;
@@ -136,7 +139,8 @@ public sealed class CkTools
             _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
             document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
             pipe, _paths.StateDirectory, blockedBy, modalButtons, dismissBy, _paths.StateDirectoryNote,
-            view.Integrity, view.Elevated, view.Privileges, view.SeesProcess, view.SeesWindow, view.Sight);
+            view.Integrity, view.Elevated, view.Privileges, view.SeesProcess, view.SeesWindow, view.Sight,
+            _plugin.ReachedPipe ?? probedPipe, _paths.LowIntegrityPipeAllowed);
     }
 
     [McpServerTool(Name = "ck.commands"),

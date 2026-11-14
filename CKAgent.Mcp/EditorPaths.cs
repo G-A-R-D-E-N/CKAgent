@@ -5,8 +5,10 @@ namespace Garden.CkAgent;
 /// Paths must come from --ck/--game: the MCP client launches us from any directory.
 public sealed class EditorPaths
 {
-    private EditorPaths(string creationKitPath, string gameDirectory, string stateDirectory, string? stateNote)
+    private EditorPaths(string creationKitPath, string gameDirectory, string stateDirectory, string? stateNote,
+                        bool allowLowPipe)
     {
+        LowIntegrityPipeAllowed = allowLowPipe;
         CreationKitPath = creationKitPath;
         GameDirectory = gameDirectory;
         DataDirectory = Path.Combine(gameDirectory, "Data");
@@ -26,6 +28,9 @@ public sealed class EditorPaths
     public string? StateDirectoryNote { get; }
     public string ManifestPath { get; }
     public string JobsDirectory { get; }
+
+    // Constraint: only --allow-low-pipe sets this, so the low-labelled pipe is never reached by default.
+    public bool LowIntegrityPipeAllowed { get; }
     public string BackupsDirectory { get; }
 
     public string EditorWarningsPath => Path.Combine(GameDirectory, "EditorWarnings.txt");
@@ -34,7 +39,7 @@ public sealed class EditorPaths
         ? FileVersionInfo.GetVersionInfo(CreationKitPath).FileVersion
         : null;
 
-    public static bool TryCreate(string? creationKit, string? game, string? state,
+    public static bool TryCreate(string? creationKit, string? game, string? state, bool allowLowPipe,
                                  out EditorPaths? paths, out string error)
     {
         paths = null;
@@ -103,7 +108,7 @@ public sealed class EditorPaths
             return false;
         }
 
-        paths = new EditorPaths(exe, gameDirectory, stateRoot, stateNote.Length == 0 ? null : stateNote);
+        paths = new EditorPaths(exe, gameDirectory, stateRoot, stateNote.Length == 0 ? null : stateNote, allowLowPipe);
         return true;
     }
 }

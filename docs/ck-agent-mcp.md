@@ -257,15 +257,47 @@ and connects; so does `dotnet ckagent.dll`, whose host lives in `C:\Program File
 does not inspect clients, and signing is not the factor — a signed copy inside the workspace is refused
 the same way. Register the server with `command: dotnet`, `args: [<build>\ckagent.dll, --game, ...]`.
 
-The plugin label is why the apphost works anyway: its pipe carries a low mandatory label
-(`D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;LW)`), so a client at low integrity can still write to
-it. Before that label, `ckagent.exe` from the workspace was refused while `dotnet ckagent.dll` connected —
-both measured. A client cannot raise itself instead: a low process may not write a medium-labelled file, so
-copying the build somewhere else and relaunching fails by design.
+There are two pipes, and only the strict one exists by default. `\\.\pipe\ckagent` is created with
+`D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;ME)`, and the explicit medium label is the part that does the
+work: a low-integrity client is refused — that is the default, and it is what a caller gets without asking for
+anything. The label has to be stated rather than inherited: a first pass left it off, and a low-integrity client
+connected to the editor's pipe anyway, because a descriptor with no mandatory label restricts nothing.
+`\\.\pipe\ckagent-low` is created with `S:(ML;;NW;;;LW)` added, and only when the editor was started with
+`<game>\CKPEPlugins\CKAgent.ini` holding `[transport] LowIntegrityPipe=1`. The client side needs its own opt-in
+on top: `--allow-low-pipe`. Both sides must agree, so neither the plugin nor a host can open the loose pipe alone.
+
+With the opt-in, the client tries `\\.\pipe\ckagent` first and `\\.\pipe\ckagent-low` second, so the loose pipe is
+never the easy path. `ck.status` reports what happened in `pluginPipe` — the name that answered, `ckagent` or
+`ckagent-low`, null when neither did — and `lowIntegrityPipeAllowed`, whether this host was even allowed to try.
+The order of the two entries in a `pipe_denied` message is the fix order: the plugin's ini first, the host's flag
+second.
+
+Measured, with the editor at medium integrity:
+
+| client | ini | flag | result |
+|---|---|---|---|
+| `dotnet ckagent.dll` | absent | absent | `pluginPipe: ckagent` |
+| `ckagent.exe` (low) | absent | absent | `pipe_denied`, message names both switches |
+| `ckagent.exe` (low) | present | present | still `pipe_denied` — see below |
+| `dotnet ckagent.dll` | present | absent | `pluginPipe: ckagent` (strict first) |
+
+The label was read off the live object rather than inferred: `\\.\pipe\ckagent` returns `label 0x2000 mask 0x1`,
+which is the medium label doing the work. `\\.\pipe\ckagent-low` returns **no SACL**, so whatever the plugin passes
+for it is not reaching the object — the same SDDL converts successfully when converted on its own, so the failure is
+in the second CreateNamedPipe path, not in the string. Until that is fixed the opt-in pipe exists (the plugin logs
+it) but does not admit the low host that needs it, and the docs do not claim otherwise; the strict default is
+unaffected, and `dotnet ckagent.dll` is the launch that works from this workspace.
+
+One trap found while measuring: CKPE loads every DLL in `CKPEPlugins`, so a backup copy left beside the plugin
+competes for the pipe name. The log showed the second module dying with `CreateNamedPipe failed (231)`
+(`ERROR_PIPE_BUSY`) while the first served, which makes any pipe result read as if the new build were loaded when
+it was not. Keep exactly one `CKAgent.dll` there.
 
 When a denial does happen, `pipe_denied` reads the client's own token and names its level, because that
-decides the cause: at low it means the loaded plugin predates the low-labelled pipe or the pipe belongs to
-another user; at medium it means the pipe belongs to another account or a higher-integrity process.
+decides the cause: at low without the flag, the refusal is the default working as designed and the message names
+both switches; at low with the flag, it means the loaded plugin did not open the loose pipe — the ini was missing
+when the editor started — or the pipe belongs to another user; at medium it means the pipe belongs to another
+account or a higher-integrity process.
 
 ### The state directory the apphost can actually write
 

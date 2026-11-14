@@ -33,6 +33,7 @@ endforeach()
 add_library(CKAgentPlugin SHARED
   dllmain.cpp
   Agent.cpp
+  AgentWire.cpp
   AgentUi.cpp
   AgentEditorUi.cpp
   AgentCellFlow.cpp

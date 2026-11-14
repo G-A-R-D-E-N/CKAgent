@@ -29,6 +29,7 @@
 #include "AgentEditorUi.h"
 #include "AgentUi.h"
 #include "Protocol.h"
+#include "AgentWire.h"
 
 namespace ckagent
 {
@@ -89,6 +90,7 @@ namespace ckagent
 		DWORD g_editorThread = 0;
 		HANDLE g_pipe = nullptr;
 		std::thread g_worker;
+		std::thread g_lowWorker;
 		std::atomic<bool> g_running{ false };
 		std::atomic<bool> g_threadOk{ false };
 		bool g_buildSupported = false;
@@ -790,63 +792,16 @@ namespace ckagent
 
 		// --- pipe (the worker must never touch editor state) ---
 
-		bool ReadLine(HANDLE pipe, std::string& carry, std::string& line)
-		{
-			for (;;)
-			{
-				const std::size_t newline = carry.find('\n');
-				if (newline != std::string::npos)
-				{
-					line = carry.substr(0, newline);
-					carry.erase(0, newline + 1);
-					if (!line.empty() && line.back() == '\r')
-						line.pop_back();
-					return true;
-				}
-
-				char buf[4096];
-				DWORD read = 0;
-				if (!ReadFile(pipe, buf, sizeof buf, &read, nullptr) || read == 0)
-					return false;
-
-				carry.append(buf, read);
-				if (carry.size() > (1 << 20)) // a runaway client must not grow this forever
-					return false;
-			}
-		}
-
-		bool WriteAll(HANDLE pipe, const std::string& text)
-		{
-			std::size_t sent = 0;
-			while (sent < text.size())
-			{
-				DWORD wrote = 0;
-				if (!WriteFile(pipe, text.data() + sent, static_cast<DWORD>(text.size() - sent), &wrote, nullptr) || wrote == 0)
-					return false;
-				sent += wrote;
-			}
-			return true;
-		}
-
-		// A logged reply must not carry its newline into the window transcript.
-		std::string Trimmed(const std::string& text)
-		{
-			std::size_t end = text.size();
-			while (end > 0 && (text[end - 1] == '\n' || text[end - 1] == '\r'))
-				--end;
-			return text.substr(0, end);
-		}
-
 		void ServeClient(HANDLE pipe)
 		{
 			char helo[128];
 			std::snprintf(helo, sizeof helo, "HELO %s %s\n", kProtocolVersion, kSupportedEditorBuild);
-			if (!WriteAll(pipe, helo))
+			if (!wire::WriteAll(pipe, helo))
 				return;
 
 			std::string carry;
 			std::string line;
-			while (g_running.load() && ReadLine(pipe, carry, line))
+			while (g_running.load() && wire::ReadLine(pipe, carry, line))
 			{
 				if (line.rfind("CALL ", 0) != 0)
 					continue;
@@ -858,8 +813,8 @@ namespace ckagent
 					return;
 
 				RunOnEditorThread(call);
-				LogLine("CALL " + call.request + " -> " + Trimmed(call.reply));
-				const bool written = WriteAll(pipe, call.reply);
+				LogLine("CALL " + call.request + " -> " + wire::Trimmed(call.reply));
+				const bool written = wire::WriteAll(pipe, call.reply);
 				CloseHandle(call.done);
 				if (!written)
 					return;
@@ -880,22 +835,22 @@ namespace ckagent
 				g_camera ? "resolved" : (g_cameraReason.empty() ? "unresolved" : g_cameraReason.c_str()));
 		}
 
-		void WorkerLoop()
+		void WorkerLoop(const wchar_t* pipeName, bool lowLabel)
 		{
 			// The worker must announce itself: a pipe that never appears has to be distinguishable from one that failed.
-			LogLine(Format("CKAgent: worker started (pid %lu)", GetCurrentProcessId()));
+			LogLine(Format("CKAgent: worker started on %ls (pid %lu)", pipeName, GetCurrentProcessId()));
 
 			while (g_running.load())
 			{
-				SECURITY_ATTRIBUTES security = PipeSecurity();
-				HANDLE pipe = CreateNamedPipeW(kPipeName,
+				SECURITY_ATTRIBUTES security = PipeSecurity(lowLabel);
+				HANDLE pipe = CreateNamedPipeW(pipeName,
 					PIPE_ACCESS_DUPLEX,
 					PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
 					1, 64 * 1024, 64 * 1024, 0, &security);
 
 				if (pipe == INVALID_HANDLE_VALUE)
 				{
-					LogLine(Format("CKAgent: CreateNamedPipe failed (%lu)", GetLastError()));
+					LogLine(Format("CKAgent: CreateNamedPipe on %ls failed (%lu)", pipeName, GetLastError()));
 					return;
 				}
 
@@ -966,10 +921,18 @@ namespace ckagent
 		SetTimer(g_window, kUiTimer, 500, nullptr);
 
 		g_running = true;
-		g_worker = std::thread(WorkerLoop);
+		g_worker = std::thread(WorkerLoop, kPipeName, false);
 
-					LogLine(Format("CKAgent: serving on %ls for build %s",
-				kPipeName, FormatBuild(runtimeVersion).c_str()));
+		// Constraint: the low-labelled pipe is opt-in, so the strict pipe is served alone unless the ini asks for more.
+		if (LowIntegrityPipeEnabled())
+			g_lowWorker = std::thread(WorkerLoop, kLowPipeName, true);
+
+		LogLine(Format("CKAgent: serving on %ls for build %s", kPipeName, FormatBuild(runtimeVersion).c_str()));
+
+		if (g_lowWorker.joinable())
+			LogLine(Format("CKAgent: also serving on %ls, from CKAgent.ini [transport] LowIntegrityPipe=1",
+				kLowPipeName));
+
 		return true;
 	}
 
@@ -978,14 +941,25 @@ namespace ckagent
 		if (!g_running.exchange(false))
 			return;
 
-					// Stop must unblock ConnectNamedPipe with a throwaway client.
+		// Constraint: Stop unblocks ConnectNamedPipe with a throwaway client on every pipe that was opened.
 		HANDLE wake = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
 			OPEN_EXISTING, 0, nullptr);
 		if (wake != INVALID_HANDLE_VALUE)
 			CloseHandle(wake);
 
+		if (g_lowWorker.joinable())
+		{
+			HANDLE lowWake = CreateFileW(kLowPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+				OPEN_EXISTING, 0, nullptr);
+			if (lowWake != INVALID_HANDLE_VALUE)
+				CloseHandle(lowWake);
+		}
+
 		if (g_worker.joinable())
 			g_worker.join();
+
+		if (g_lowWorker.joinable())
+			g_lowWorker.join();
 
 		if (g_window)
 		{

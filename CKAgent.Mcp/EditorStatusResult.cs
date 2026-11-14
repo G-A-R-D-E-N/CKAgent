@@ -25,4 +25,6 @@ public sealed record EditorStatusResult(
     IReadOnlyList<string> ClientPrivileges,
     bool SeesEditorProcess,
     bool SeesEditorWindow,
-    string EditorSight);
+    string EditorSight,
+    string? PluginPipe,
+    bool LowIntegrityPipeAllowed);

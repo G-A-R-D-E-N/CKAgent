@@ -108,19 +108,24 @@ internal static class EditorDiscovery
         return found;
     }
 
-    internal static bool IsPluginPipeAvailable()
+    // Constraint: the probe must walk the same candidates as a call, or a status can name a pipe no call reaches.
+    internal static string? ProbePipe(bool allowLow)
     {
-        try
+        foreach (string name in PluginPipes.Candidates(allowLow))
         {
-            using var client = new System.IO.Pipes.NamedPipeClientStream(
-                ".", "ckagent", System.IO.Pipes.PipeDirection.InOut,
-                System.IO.Pipes.PipeOptions.Asynchronous);
-            client.Connect(100);
-            return true;
+            try
+            {
+                using var client = new System.IO.Pipes.NamedPipeClientStream(
+                    ".", name, System.IO.Pipes.PipeDirection.InOut,
+                    System.IO.Pipes.PipeOptions.Asynchronous);
+                client.Connect(100);
+                return name;
+            }
+            catch (Exception)
+            {
+            }
         }
-        catch (Exception)
-        {
-            return false;
-        }
+
+        return null;
     }
 }

@@ -65,7 +65,7 @@ $failures = New-Object System.Collections.Generic.List[string]
 $observed = [ordered]@{ cells = @(); fabricated = @() }
 
 function Invoke-Plugin([string]$command) {
-    $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'ckagent', [System.IO.Pipes.PipeDirection]::InOut)
+    $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $(if ($env:CKAGENT_LOW_PIPE -eq '1') { 'ckagent-low' } else { 'ckagent' }), [System.IO.Pipes.PipeDirection]::InOut)
     try {
         $pipe.Connect(5000)
     } catch {

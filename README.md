@@ -197,16 +197,31 @@ dotnet publish CKAgent/CKAgent.Mcp/CKAgent.Mcp.csproj -c Release -r win-x64 --se
 }
 ```
 
-Either launch works: `ckagent.exe` and `dotnet ckagent.dll` both connect. A sandboxed workspace hands
-`ckagent.exe` a low-integrity token, which Windows would refuse to write to a medium pipe, so the plugin
-labels its pipe low (`S:(ML;;NW;;;LW)`) — that is what lets the apphost in, and it was measured here, not
-assumed.
+Either launch works: `dotnet ckagent.dll` connects, and `ckagent.exe` connects when it is allowed to. The
+default pipe, `\\.\pipe\ckagent`, carries `S:(ML;;NW;;;ME)` and is reachable only from medium integrity and
+above — that label is stated rather than inherited, because a first descriptor without one was measured
+letting a low-integrity client straight in.
 
-The trade-off is deliberate: any process at the editor user's low integrity can then drive the editor. If
-that is too much, run the server through `dotnet` and drop the label from `PipeSecurity` in `Protocol.h`.
+A sandboxed workspace hands `ckagent.exe` a low-integrity token, so it needs the opt-in, and the opt-in has
+two halves: the plugin opens `\\.\pipe\ckagent-low` (`S:(ML;;NW;;;LW)`) only when the editor starts with
+`<game>\CKPEPlugins\CKAgent.ini` containing `[transport] LowIntegrityPipe=1`, and the host tries that pipe
+only when launched with `--allow-low-pipe`. With both, the strict pipe is still tried first, so the loose
+one is never the easy path. `ck.status` reports which one answered in `pluginPipe`, and whether this host
+was allowed to try at all in `lowIntegrityPipeAllowed`.
+
+That path is not working yet, and this file says so rather than claiming it: with the ini and the flag in place a
+low-integrity `ckagent.exe` is still refused, and `\\.\pipe\ckagent-low` is measured to carry no mandatory label at
+all, so the descriptor the plugin passes for it is not reaching the object. Until that is fixed a low-integrity host
+has no way in, and `dotnet ckagent.dll` is the launch to use.
+
+The trade-off stays deliberate and off by default: once the opt-in does work, any process at the editor user's low
+integrity can drive the editor. Turn it off by removing the ini or its line and restarting the editor.
+
+The in-repo probes run from a PowerShell that is low integrity in this workspace, so they read the same
+switch from the environment: set `CKAGENT_LOW_PIPE=1` and they connect to `ckagent-low` instead.
 
 A denial still explains itself: `pipe_denied` reads the client's own token, reports its level, and names
-the likely cause — a plugin older than the low-labelled pipe, or a pipe held by another account.
+the switch that is missing — the plugin's ini for a low client, or the account and session for a higher one.
 
 Working files — the command manifest, save backups, job logs — live in `%LOCALAPPDATA%\ckagent` and survive
 a server restart. When that folder cannot be written the host steps to `%LOCALAPPDATA%\Temp\Low\ckagent`, then
