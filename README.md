@@ -70,7 +70,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | `ck.job_log` | tail a job's console log |
 | `ck.frame` | load a cell and stand the camera in front of a named reference (`distance`, `yaw`) |
 | `ck.aim` | turn the camera onto a named reference without moving it; optional `distance` standoff |
-| `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat` |
+| `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat`, `orbit` a point at a distance and angle |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row |
 | `ck.cell_load` | open a cell exactly as double-clicking it does |
 | `ck.cell` | which cell the render window holds, as EditorID and form id, so a load is confirmed rather than assumed |
@@ -118,8 +118,10 @@ Everything above was measured against a live editor, not read off the SDK:
 - `ck.frame` on `Loot_Prewar_Safe` reports `aim 1.0000`; `ck.aim` does the same from 400 units above the
   object, writing a pitch of −1.0015 rad and a view row of `(0.5391, 0, −0.8423)`, the direction to it.
 - `lookat` at `(1000, 2000, 3000)` from `(39, 9492, 272)` lands the view on `(0.1197, −0.9329, 0.3397)`,
-  the exact unit direction, and the editor's own `LookAt` produces the same matrix. Nothing about the
-  camera object changes except the rotation, so there is no stored focus point.
+  the exact unit direction, and the editor's own `LookAt` produces the same matrix.
+- `orbit` around `Loot_Prewar_Safe` at radius 400 holds the radius on all three angles tried (0, π/2 and
+  π with pitch 0.4), measures 400.00 from the probe's own translation each time, and leaves `pivotRead`
+  equal to the point with `hasPivot: true`, so the editor's own orbit and zoom now work around it.
 - A dialog created while the editor is not foreground stays invisible and disables the frame; CKAgent detects
   it from `status`, reveals it, retries once, and names it if it still blocks.
 

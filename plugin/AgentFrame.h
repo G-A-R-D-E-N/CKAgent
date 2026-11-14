@@ -23,6 +23,9 @@ namespace ckagent
 	// Verification requires the node's own forward row, not the matrix the tool has just written.
 	bool ReadNodeForward(void* camera, float out[3]);
 
+	bool RunOrbitTool(const std::string& args, const FrameTarget& target, std::string& payload,
+		std::string& errorCode, std::string& errorMessage);
+
 	bool RunFrameTool(const std::string& args, const FrameTarget& target, std::string& payload,
 		std::string& errorCode, std::string& errorMessage);
 

@@ -364,13 +364,16 @@ public sealed class CameraTools
                  "optional yaw/pitch (radians, +pitch tilts up); mode=Move steps by x/y/z in the camera's " +
                  "own axes, so +y is its right and not world +Y; mode=Lookat aims at the world point " +
                  "x/y/z, calling the editor's LookAt and then writing the pose it computes when that " +
-                 "does not verify, and reports which path aimed it as via plus the achieved aim. Every " +
-                 "mode returns the resulting position " +
+                 "does not verify, and reports which path aimed it as via plus the achieved aim; " +
+                 "mode=Orbit circles the world point x/y/z at the given distance and angle (radians, angle 0 " +
+                 "looks along +X), optionally tilted, sets the editor's own pivot to that point so its own " +
+                 "orbit and zoom continue from there, and reports the pivot it read back plus the radius " +
+                 "and aim it achieved. Every mode returns the resulting position " +
                  "and matrix. Needs a loaded cell and reports camera_transform_unverified when the scene " +
                  "camera has no usable transform yet. " +
                  "Requires CKPE plus CKAgent.dll in <game>\\CKPEPlugins\\.")]
     public CameraResult Camera(string mode = "get", double? x = null, double? y = null, double? z = null,
-                               double? yaw = null, double? pitch = null)
+                               double? yaw = null, double? pitch = null, double? distance = null)
     {
         string command;
 
@@ -435,8 +438,34 @@ public sealed class CameraTools
                 break;
             }
 
+            case "orbit":
+            {
+                if (x == null || y == null || z == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Orbit needs x, y and z: the world point to circle", null);
+                }
+
+                if (distance == null || !(distance > 0))
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Orbit needs a positive distance: the radius to keep", null);
+                }
+
+                if (yaw == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Orbit needs yaw: the angle around the point, in radians", null);
+                }
+
+                command = $"orbit {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)} " +
+                          $"{PluginClient.Format(distance.Value)} {PluginClient.Format(yaw.Value)}" +
+                          (pitch != null ? $" {PluginClient.Format(pitch.Value)}" : string.Empty);
+                break;
+            }
+
             default:
-                return new CameraResult("error", "invalid_argument", "mode must be get or set", null);
+                return new CameraResult("error", "invalid_argument", "mode must be get, set, move, lookat or orbit", null);
         }
 
         if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))

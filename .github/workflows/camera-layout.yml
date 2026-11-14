@@ -39,6 +39,16 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the layout test accepted a drifted kNiRowStride' }
           $global:LASTEXITCODE = 0
 
+      - name: An orbit that no longer circles the pivot is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentFrame.cpp -Raw) -replace 'x - distance \*', 'x + distance *' |
+            Set-Content drift/AgentFrame.cpp
+          ./tools/camera-layout.test.ps1 -Frame drift/AgentFrame.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the layout test accepted an orbit placing the camera on the far side of the pivot' }
+          $global:LASTEXITCODE = 0
+
       - name: Keep the evidence
         uses: actions/upload-artifact@v4
         with:

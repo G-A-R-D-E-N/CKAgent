@@ -342,4 +342,82 @@ namespace ckagent
 		payload = buf;
 		return true;
 	}
+
+	// The orbit must circle the point at the distance it was given, which is what the editor's own orbit keeps.
+	bool RunOrbitTool(const std::string& args, const FrameTarget& target, std::string& payload,
+		std::string& errorCode, std::string& errorMessage)
+	{
+		auto* camera = reinterpret_cast<CameraApi*>(target.camera);
+		if (!camera)
+		{
+			errorCode = "camera_unavailable";
+			errorMessage = "the camera is not resolved";
+			return false;
+		}
+
+		const std::vector<std::string> words = SplitWords(args);
+		if (words.size() < 5)
+		{
+			errorCode = "bad_args";
+			errorMessage = "orbit needs x y z distance angle [pitch]";
+			return false;
+		}
+
+		const float x = static_cast<float>(std::atof(words[0].c_str()));
+		const float y = static_cast<float>(std::atof(words[1].c_str()));
+		const float z = static_cast<float>(std::atof(words[2].c_str()));
+		const float distance = static_cast<float>(std::atof(words[3].c_str()));
+		const float angle = static_cast<float>(std::atof(words[4].c_str()));
+		const float pitch = words.size() > 5 ? static_cast<float>(std::atof(words[5].c_str())) : 0.0f;
+
+		// Constraint: a radius of zero or less is not a circle, so the distance must be positive.
+		if (!(distance > 0.0f))
+		{
+			errorCode = "bad_args";
+			errorMessage = "distance must be greater than zero";
+			return false;
+		}
+
+		const NiPoint3 pivot{ x, y, z };
+
+		// Constraint: the editor orbits and zooms about its own pivot, so the focus must be set to this point.
+		camera->SetPivot(pivot, 1.0f, false);
+
+		// Position must come from the pivot minus the view direction, so the circle keeps the radius asked for.
+		const double cp = std::cos(pitch);
+		camera->SetPosition(NiPoint3{
+			x - distance * static_cast<float>(std::cos(angle) * cp),
+			y - distance * static_cast<float>(std::sin(angle) * cp),
+			z - distance * static_cast<float>(std::sin(pitch)) });
+
+		NiMatrix43 rotate{};
+		const ViewMatrix view = MakeViewMatrix(angle, pitch);
+		std::memcpy(&rotate, view.m, sizeof rotate);
+		camera->SetRotation(rotate);
+
+		const NiPoint3 after = camera->GetPosition();
+		const double dx = static_cast<double>(pivot.x) - after.x;
+		const double dy = static_cast<double>(pivot.y) - after.y;
+		const double dz = static_cast<double>(pivot.z) - after.z;
+		const double span = std::sqrt(dx * dx + dy * dy + dz * dz);
+		const double aim = AimAgainst(camera, after, pivot);
+
+		// The pivot must read back, because a focus the editor never took leaves the next orbit starting elsewhere.
+		const NiPoint3 reported = camera->GetPivot();
+		const bool hasPivot = camera->HasPivot();
+
+		char buf[768];
+		std::snprintf(buf, sizeof buf,
+			"{\"pivot\":[%.4f,%.4f,%.4f],\"pivotRead\":[%.4f,%.4f,%.4f],\"hasPivot\":%s,"
+			"\"angle\":%.4f,\"pitch\":%.4f,\"distance\":%.2f,\"camera\":[%.4f,%.4f,%.4f],"
+			"\"span\":%.2f,\"aim\":%.4f,\"aligned\":%s}",
+			pivot.x, pivot.y, pivot.z,
+			reported.x, reported.y, reported.z,
+			hasPivot ? "true" : "false",
+			angle, pitch, distance,
+			after.x, after.y, after.z, span, aim,
+			aim > 0.999 ? "true" : "false");
+		payload = buf;
+		return true;
+	}
 }

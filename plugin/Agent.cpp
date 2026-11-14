@@ -637,7 +637,7 @@ namespace ckagent
 			{
 				payload = ToolCell();
 			}
-			else if (tool == "frame" || tool == "aim")
+			else if (tool == "frame" || tool == "aim" || tool == "orbit")
 			{
 				// A pose must run on this thread with resolved anchors, so the lookup and the write agree.
 				FrameTarget target;
@@ -655,7 +655,8 @@ namespace ckagent
 
 				const bool posed = errorCode.empty() &&
 					(tool == "frame" ? RunFrameTool(args, target, payload, errorCode, errorMessage)
-					                 : RunAimTool(args, target, payload, errorCode, errorMessage));
+					 : tool == "aim" ? RunAimTool(args, target, payload, errorCode, errorMessage)
+					                 : RunOrbitTool(args, target, payload, errorCode, errorMessage));
 
 				if (!posed)
 				{

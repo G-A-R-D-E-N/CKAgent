@@ -6,6 +6,7 @@
 
 param(
     [string]$Plugin = 'plugin/Agent.cpp',
+    [string]$Frame = 'plugin/AgentFrame.cpp',
     [string]$Evidence = ''
 )
 
@@ -72,6 +73,44 @@ if ($failures.Count -eq 0) {
     }
 }
 
+# The orbit must stay a circle: it takes the editor's own pivot and derives the camera from it at the radius
+# asked for. A drift here still produces a camera pose, just one that no longer circles the target.
+if (-not (Test-Path -LiteralPath $Frame -PathType Leaf)) {
+    $failures.Add("frame source not found: $Frame")
+} else {
+    $frameText = Get-Content -LiteralPath $Frame -Raw
+    $orbit = [regex]::Match($frameText, 'bool RunOrbitTool[\s\S]*?\r?\n\t\}')
+
+    $observed['orbit'] = if ($orbit.Success) { 'found' } else { 'missing' }
+
+    if (-not $orbit.Success) {
+        $failures.Add("$Frame has no RunOrbitTool, so mode=orbit is missing or unreachable")
+    } else {
+        $body = $orbit.Value
+        $required = @(
+            @('SetPivot\(pivot', "the orbit must set the editor's own pivot, or its next orbit and zoom start from a different focus"),
+            @('HasPivot\(\)', 'the orbit must report whether the editor took the pivot, or a refused focus looks like a success'),
+            @('pivotRead', 'the orbit must report the pivot it read back, because the write alone does not prove the focus'),
+            @('x - distance \*', 'the orbit must place the camera a distance away from the pivot on the x axis, not on the far side'),
+            @('y - distance \*', 'the orbit must place the camera a distance away from the pivot on the y axis, not on the far side'),
+            @('z - distance \*', 'the orbit must place the camera a distance away from the pivot on the z axis, or the circle leaves the plane'),
+            @('MakeViewMatrix\(angle, pitch\)', 'the orbit must aim through the shared pose builder so the view row matches the angle'),
+            @('!\(distance > 0', 'the orbit must reject a zero or negative radius, which is not a circle')
+        )
+
+        foreach ($expectation in $required) {
+            if ($body -notmatch $expectation[0]) {
+                $failures.Add("RunOrbitTool no longer matches /$($expectation[0])/: $($expectation[1])")
+            }
+        }
+
+        # A tool nothing dispatches is a dead branch, so the command must be routed with the other poses.
+        if ($pluginText -notmatch 'tool == "orbit"') {
+            $failures.Add("$Plugin never dispatches the orbit tool, so mode=orbit cannot reach it")
+        }
+    }
+}
+
 $evidenceJson = [ordered]@{ layout = $observed; failures = @($failures); passed = ($failures.Count -eq 0) } | ConvertTo-Json -Depth 6
 if ($Evidence) {
     $evidenceJson | Set-Content -LiteralPath $Evidence -Encoding utf8
@@ -82,6 +121,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output 'PASS camera layout matches the measured offsets and row stride'
+Write-Output 'PASS camera layout matches the measured offsets and row stride, and the orbit keeps its pivot'
 Write-Output $evidenceJson
 exit 0
