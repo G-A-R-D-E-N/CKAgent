@@ -228,6 +228,15 @@ a distance away from it. Three extra steps drift the offset, the stride and the 
 and fail if the test still passes, so the gate itself is checked. The test reads source text only — no
 editor, no plugin build, nothing to install, which is why it can run on a stock runner.
 
+The same gate cross-checks the cell decode, which is a contract between three files: the plugin writes the
+reply, the server parses it in `CellWatch`, and `tools/cell-probe.ps1` asserts it. `kCurrentCellOffset` must
+stay at `0xF8`, the cell must be read at `g_renderWindow + kCurrentCellOffset` inside its `0x180` bytes, the
+reply must emit `editorId`, `formId`, `interior`, `gridX`, `gridY` and `hasWorldSpace`, both `ToolStatus` and
+`ToolCell` must go through the shared `ReadPlacement`, and every key the server parses or the probe asserts
+must be one the plugin actually emits. Four more drift steps move the offset, rename `editorId` to
+`editor_id`, hard-code the offset instead of using the constant, and weaken the probe's key list — each one
+must fail the gate.
+
 `tools/blocked-modal-probe.ps1` covers the part that cannot run on a runner: it needs a live editor. It
 opens `File/Data` while the editor is in the background so the dialog is created hidden, asserts `status`
 names it, then makes a call that must fail (`ck.frame` with no cell loaded) and asserts no blocking dialog

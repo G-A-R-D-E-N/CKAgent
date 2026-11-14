@@ -59,6 +59,46 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw 'the layout test accepted an aim check reading the node row it wrote' }
           $global:LASTEXITCODE = 0
 
+      - name: A drifted current-cell offset is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/Agent.cpp -Raw) -replace 'kCurrentCellOffset = 0xF8', 'kCurrentCellOffset = 0xF0' |
+            Set-Content drift/Agent.cpp
+          ./tools/camera-layout.test.ps1 -Plugin drift/Agent.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted a drifted kCurrentCellOffset' }
+          $global:LASTEXITCODE = 0
+
+      - name: A renamed cell key is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/Agent.cpp -Raw) -replace '\\"editorId\\"', '\"editor_id\"' |
+            Set-Content drift/Agent.cpp
+          ./tools/camera-layout.test.ps1 -Plugin drift/Agent.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted a cell reply renamed to editor_id while the server and the probe still read editorId' }
+          $global:LASTEXITCODE = 0
+
+      - name: A cell read that ignores the constant is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/Agent.cpp -Raw) -replace 'g_renderWindow \+ kCurrentCellOffset', 'g_renderWindow + 0xF8' |
+            Set-Content drift/Agent.cpp
+          ./tools/camera-layout.test.ps1 -Plugin drift/Agent.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted a cell read that hard-codes the offset instead of using the constant' }
+          $global:LASTEXITCODE = 0
+
+      - name: A probe that stops asserting a key is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content tools/cell-probe.ps1 -Raw) -replace "foreach \(\`$key in 'interior', 'gridX', 'gridY', 'hasWorldSpace'\)", "foreach (`$key in 'interior', 'gridX')" |
+            Set-Content drift/cell-probe.ps1
+          ./tools/camera-layout.test.ps1 -Probe drift/cell-probe.ps1
+          if ($LASTEXITCODE -eq 0) { throw 'the test accepted a probe that no longer asserts gridY or hasWorldSpace' }
+          $global:LASTEXITCODE = 0
+
       - name: Keep the evidence
         uses: actions/upload-artifact@v4
         with:

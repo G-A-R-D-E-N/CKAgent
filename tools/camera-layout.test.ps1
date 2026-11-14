@@ -7,6 +7,9 @@
 param(
     [string]$Plugin = 'plugin/Agent.cpp',
     [string]$Frame = 'plugin/AgentFrame.cpp',
+    [string]$Server = 'CKAgent.Mcp/CkTools.cs',
+    [string]$Probe = 'tools/cell-probe.ps1',
+    [string]$Flow = 'plugin/AgentCellFlow.cpp',
     [string]$Evidence = ''
 )
 
@@ -143,6 +146,101 @@ if (-not (Test-Path -LiteralPath $Frame -PathType Leaf)) {
     }
 }
 
+# Regression: the cell reply is a contract between three files - the plugin writes the keys, the server
+# parses them, and the probe asserts them - so a rename or a moved offset in one of them must fail here
+# instead of shipping a load that reports success without naming the cell it opened.
+foreach ($pair in @(@('server', $Server), @('probe', $Probe))) {
+    if (-not (Test-Path -LiteralPath $pair[1] -PathType Leaf)) {
+        $failures.Add("$($pair[0]) source not found: $($pair[1])")
+    }
+}
+
+if ((Test-Path -LiteralPath $Plugin -PathType Leaf) -and (Test-Path -LiteralPath $Server -PathType Leaf) -and (Test-Path -LiteralPath $Probe -PathType Leaf)) {
+    $cellPlugin = Get-Content -LiteralPath $Plugin -Raw
+    $serverText = Get-Content -LiteralPath $Server -Raw
+    $probeText = Get-Content -LiteralPath $Probe -Raw
+
+    $cellOffset = Get-Constant $cellPlugin 'kCurrentCellOffset'
+    $tesOffset = Get-Constant $cellPlugin 'kTesSingletonOffset'
+    $observed['kCurrentCellOffset'] = if ($null -ne $cellOffset) { '0x{0:X}' -f $cellOffset } else { 'missing' }
+    $observed['kTesSingletonOffset'] = if ($null -ne $tesOffset) { '0x{0:X}' -f $tesOffset } else { 'missing' }
+
+    if ($null -eq $cellOffset) { $failures.Add("kCurrentCellOffset is not declared in $Plugin") }
+    if ($null -eq $tesOffset) { $failures.Add("kTesSingletonOffset is not declared in $Plugin") }
+
+    if ($null -ne $cellOffset) {
+        # Invariant: _CurrentCell sits at 0xF8 in BGSRenderWindow, the offset ck.cell was measured against.
+        Assert-Layout 'kCurrentCellOffset (_CurrentCell in BGSRenderWindow)' ('0x{0:X}' -f $cellOffset) '0xF8'
+        if ($cellPlugin -notmatch 'g_renderWindow \+ kCurrentCellOffset') {
+            $failures.Add('the cell is not read at g_renderWindow + kCurrentCellOffset, so the constant no longer describes the read')
+        }
+    }
+
+    if ($null -ne $tesOffset) {
+        Assert-Layout 'kTesSingletonOffset (TES singleton pointer)' ('0x{0:X}' -f $tesOffset) '0x3D49150'
+    }
+
+    # A read past the object would decode a neighbouring allocation, so the cell read must stay inside it.
+    if ($cellPlugin -notmatch 'IsReadable\(reinterpret_cast<const void\*>\(cell\), 0x180\)') {
+        $failures.Add('the cell read no longer bounds itself to the 0x180-byte cell object')
+    }
+
+    # The placement is one shared read, so status and cell cannot report different grid coordinates.
+    $placementCalls = ([regex]::Matches($cellPlugin, 'ReadPlacement\(')).Count
+    $flowText = if (Test-Path -LiteralPath $Flow -PathType Leaf) { Get-Content -LiteralPath $Flow -Raw } else { '' }
+    $observed['placementCalls'] = $placementCalls
+
+    if ($placementCalls -lt 2) {
+        $failures.Add("$Plugin calls ReadPlacement $placementCalls time(s), so the placement is not shared with status")
+    }
+    if ($flowText -notmatch 'Placement ReadPlacement\(std::uintptr_t slot\)') {
+        $failures.Add("$Flow no longer defines ReadPlacement, so the shared placement read is gone")
+    }
+
+    # Every key the reply carries, as the plugin emits it inside the JSON format strings.
+    $emitted = @('resolved', 'window', 'cell', 'loaded', 'readable', 'editorId', 'formId', 'interior', 'gridX', 'gridY', 'hasWorldSpace')
+    foreach ($key in $emitted) {
+        if (-not $cellPlugin.Contains('\"' + $key + '\"')) {
+            $failures.Add("$Plugin no longer emits '$key' in the cell reply")
+        }
+    }
+
+    $serverKeys = @([regex]::Matches($serverText, 'Text\(root, "(\w+)"\)') | ForEach-Object { $_.Groups[1].Value })
+    $serverKeys += @([regex]::Matches($serverText, 'TryGetProperty\("(\w+)"') | ForEach-Object { $_.Groups[1].Value })
+    $serverKeys = @($serverKeys | Select-Object -Unique)
+
+    $probeKeys = @([regex]::Matches($probeText, "PSObject\.Properties\['(\w+)'\]") | ForEach-Object { $_.Groups[1].Value })
+    $probeLoop = [regex]::Match($probeText, 'foreach \(\$key in ([^)]*)\)')
+    if ($probeLoop.Success) {
+        $probeKeys += @([regex]::Matches($probeLoop.Groups[1].Value, "'(\w+)'") | ForEach-Object { $_.Groups[1].Value })
+    }
+    $probeKeys = @($probeKeys | Select-Object -Unique)
+
+    $observed['serverKeys'] = ($serverKeys -join ',')
+    $observed['probeKeys'] = ($probeKeys -join ',')
+
+    if ($serverKeys -notcontains 'editorId' -or $serverKeys -notcontains 'formId') {
+        $failures.Add("$Server no longer decodes editorId and formId, so the cell is identified by nothing")
+    }
+    foreach ($key in 'editorId', 'formId') {
+        if ($probeKeys -notcontains $key) {
+            $failures.Add("$Probe no longer asserts '$key', so a reply with the wrong cell would pass it")
+        }
+    }
+    foreach ($key in 'interior', 'gridX', 'gridY', 'hasWorldSpace') {
+        if ($probeKeys -notcontains $key) {
+            $failures.Add("$Probe no longer asserts '$key', so the placement could stop being reported")
+        }
+    }
+
+    # Every key read by the server or asserted by the probe must be one the plugin actually emits.
+    foreach ($key in @($serverKeys + $probeKeys | Select-Object -Unique)) {
+        if ($emitted -notcontains $key) {
+            $failures.Add("$Server or $Probe reads '$key', which the cell reply does not carry")
+        }
+    }
+}
+
 $evidenceJson = [ordered]@{ layout = $observed; failures = @($failures); passed = ($failures.Count -eq 0) } | ConvertTo-Json -Depth 6
 if ($Evidence) {
     $evidenceJson | Set-Content -LiteralPath $Evidence -Encoding utf8
@@ -153,6 +251,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output 'PASS camera layout, scene-camera aim check and orbit pivot all match what was measured'
+Write-Output 'PASS camera layout, scene-camera aim check, orbit pivot and cell decode all match what was measured'
 Write-Output $evidenceJson
 exit 0
