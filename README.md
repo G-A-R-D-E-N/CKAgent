@@ -134,3 +134,12 @@ Everything above was measured against a live editor, not read off the SDK:
 
 Working files — the command manifest, save backups, job logs — live in `%LOCALAPPDATA%\ckagent` and survive
 a server restart. A job left `running` is reported `interrupted` rather than silently forgotten.
+
+## Checks
+
+`.github/workflows/camera-layout.yml` runs `tools/camera-layout.test.ps1` on every pull request. It fails
+when the plugin's hand-measured camera constants drift (world `0x70`, translate `world+0x30`, scale
+`world+0x3C`, row stride `4`), when the readable window stops covering the scale word, or when the stride
+stops being used to address columns. Two extra steps drift the offset and the stride on purpose and fail if
+the test still passes, so the gate itself is checked. The test reads source text only — no editor, no
+plugin build, nothing to install.

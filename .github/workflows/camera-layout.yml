@@ -1,0 +1,47 @@
+name: camera layout
+
+# The plugin decodes the scene camera through hand-measured offsets, so a change to those constants has to
+# fail here rather than ship as a wrong pose.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  layout:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Measured camera layout still matches the plugin
+        shell: pwsh
+        run: ./tools/camera-layout.test.ps1 -Evidence camera-layout.json
+
+      - name: A drifted offset is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/Agent.cpp -Raw) -replace 'kNiCameraWorld = 0x70', 'kNiCameraWorld = 0x74' |
+            Set-Content drift/Agent.cpp
+          ./tools/camera-layout.test.ps1 -Plugin drift/Agent.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the layout test accepted a drifted kNiCameraWorld' }
+          $global:LASTEXITCODE = 0
+
+      - name: A drifted row stride is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/Agent.cpp -Raw) -replace 'kNiRowStride = 4', 'kNiRowStride = 3' |
+            Set-Content drift/Agent.cpp
+          ./tools/camera-layout.test.ps1 -Plugin drift/Agent.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the layout test accepted a drifted kNiRowStride' }
+          $global:LASTEXITCODE = 0
+
+      - name: Keep the evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: camera-layout
+          path: camera-layout.json
+          if-no-files-found: error
