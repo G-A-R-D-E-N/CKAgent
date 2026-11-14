@@ -300,9 +300,12 @@ untouched.
 
 `tools/live-evidence.ps1` is the release run: both live probes and the camera sweep in one pass, into one
 evidence file. They need opposite editor states — the blocked-modal probe needs `File/Data` available, the
-sweep and the aim probe need a cell — so the wrapper always runs the probe first, then makes sure a cell is
-loaded, then the sweep, then the aim probe, which loads its own cell and leaves it loaded. One command
-covers both probes, so a release cannot quietly run only the one that comes to mind first.
+sweep and the aim probe need a cell — so the wrapper sets that state itself instead of trusting what it
+finds: it frees the cell the render window holds (re-reading the free state, so a write that never reached
+the render window cannot pass), runs the probe, frees and loads `-Cell` again, then the sweep, then the aim
+probe, which loads its own cell and leaves it loaded. Either starting state — a cell open or none — therefore
+runs the same three checks in the same order, and the probe's own close-and-restore never has to trigger. One
+command covers both probes, so a release cannot quietly run only the one that comes to mind first.
 
 The probe also covers the other half of that state — a dialog left on screen. It reveals the hidden dialog
 instead of hoping a foreground race goes its way, then asserts the refusal a command gets (`warning` /

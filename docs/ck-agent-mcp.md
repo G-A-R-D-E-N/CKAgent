@@ -973,17 +973,22 @@ difference between the view row and node row 1 `0`, worst forward error `0.00004
 
 `tools/live-evidence.ps1` is the release run: both live probes and the sweep in one pass, one file. They
 need opposite editor states — the modal probe opens `File/Data`, which the editor greys out while a cell is
-open, and the sweep and the aim probe need a cell — and the probe closes a loaded cell itself (`ui.cellclose`,
-which clears `BGSRenderWindow+0xF8` and re-reads it) and reloads the same cell afterwards, so the wrapper
-always runs the probe, ensures a cell, then the sweep, then the aim probe (`-AimCell`, `-AimReference`,
+open, and the sweep and the aim probe need a cell — so the wrapper sets that state itself rather than trusting
+what it finds: it closes the cell the render window holds (`ui.cellclose`, which clears `BGSRenderWindow+0xF8`,
+re-reading the freed state so a write that never reached the render window cannot pass), runs the probe, then
+closes and loads `-Cell` again so the sweep runs in the cell the evidence names, then the sweep, then the aim
+probe (`-AimCell`, `-AimReference`,
 defaults `AndrewStation01` / `Loot_Prewar_Safe`), which loads its own cell through `ck.frame` and leaves it
 loaded. Running both probes from one command is the point: a release that runs only the probe someone
-remembers is the failure mode this closes. Measured on `DmndRadio01` with the cell already open: the probe closed
-it (`was 0x1E3D5A1D330`, `loadedAfterClose false`), found and dismissed the hidden `Data` dialog, restored the
-cell (`status ok`), and the run reported `blockedModal: pass`, `cellLoad: exit 0`, `cameraCrossCheck: pass`,
-exit `0` into one file. The close is checked rather than assumed: a write that does not reach the render
-window leaves the menu greyed, and the probe stops with exit `2` instead of pretending `File/Data` is
-available. `status.loaded` is not the test for that — it reads the TES placement, which stays after a close.
+remembers is the failure mode this closes. Run from both starting states: with `aaaMarkers` open the wrapper
+closed it itself (`closed: true`, `was aaaMarkers`, `00058955`) before the probe ever ran, then loaded
+`DmndRadio01` for the sweep, and reported `blockedModal: pass`, `cellLoad: exit 0`, `cameraCrossCheck: pass`,
+`aimProbe: pass`, exit `0`; with no cell open, the same run recorded `no cell was open` in both positions and
+passed the same three checks. The probe's own close-and-restore therefore does not appear in either file
+(`blockedModal.evidence.closedCell` is absent), which is the point: the state no longer depends on what the
+probe found. The close is checked rather than assumed: a write that does not reach the render window leaves
+the menu greyed, and the wrapper stops with exit `2` naming the cell it could not free instead of pretending
+`File/Data` is available. `status.loaded` is not the test for that — it reads the TES placement, which stays after a close.
 
 `camera get` reports both matrices, so the difference is visible without a probe. On `DmndRadio01` at yaw 0
 the node rows are `(1,0,0) (0,-0,-1) (0,1,-0)` and `sceneRotate` holds `(0,-0,-1) (0,1,-0) (1,0,0)` — the

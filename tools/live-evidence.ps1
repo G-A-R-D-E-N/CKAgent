@@ -4,10 +4,13 @@ Runs every live check in one pass — both probes and the camera cross-check —
 
 .DESCRIPTION
 The checks need opposite editor states. The blocked-modal probe opens `File/Data`, which the editor greys out
-while a cell is open, and the cross-check and the aim probe both need one. The probe closes a loaded cell
-itself and puts it back, so the order is always the same: probe, make sure a cell is loaded, the cross-check,
-then the aim probe, which loads its own cell through `ck.frame`. A cell already open is reloaded by the
-probe's own restore, which is why the load step reports `already loaded` rather than loading it twice.
+while a cell is open, and the cross-check and the aim probe both need one. The wrapper owns that state instead of
+trusting what it finds: it frees the cell the render window holds before the probe runs, and frees and loads
+`-Cell` again before the cross-check, so either starting state runs the same three checks in the same order. The
+probe's own close-and-restore then never triggers, which is why its restore step is absent from this evidence.
+
+Order: free the cell, the probe, free and load `-Cell`, the cross-check, then the aim probe, which loads its own
+cell through `ck.frame`.
 
 This is the release run: one command covers both live probes, so neither can be remembered and skipped.
 
@@ -145,19 +148,39 @@ try {
 
 $steps['editor'] = [ordered]@{ pid = $status.pid; loaded = $status.loaded; blockedBy = $status.blockedBy }
 
-# The probe closes a loaded cell itself and puts it back, so it runs first whatever the starting state.
+# Constraint: the cell is freed here rather than by the probe, so the run starts the same whichever state it found.
+# A write that does not reach the render window leaves File/Data greyed, so the freed state is read back.
+function Close-Cell {
+    $held = (Invoke-Plugin 'cell') | ConvertFrom-Json
+    if (-not $held.loaded) { return [ordered]@{ closed = $false; reason = 'no cell was open' } }
+
+    $closed = (Invoke-Plugin 'ui.cellclose') | ConvertFrom-Json
+    Start-Sleep -Milliseconds 700
+    $after = (Invoke-Plugin 'cell') | ConvertFrom-Json
+    if ($after.loaded) {
+        throw "the cell '$($held.editorId)' could not be closed, so File/Data stays disabled and the probe cannot run"
+    }
+
+    return [ordered]@{ closed = ("$($closed.closed)" -eq 'True'); was = $held.editorId; wasForm = $held.formId; reply = $closed }
+}
+
+try {
+    $steps['cellClose'] = [ordered]@{ beforeProbe = (Close-Cell) }
+} catch {
+    Write-Output "FAIL $($_.Exception.Message)"
+    exit 2
+}
+
 $steps['blockedModal'] = Invoke-Check 'the blocked-modal probe' $probeScript (Join-Path $scratch 'probe.json')
 
-$held = (Invoke-Plugin 'cell') | ConvertFrom-Json
-if ($held.loaded) {
-    $steps['cellLoad'] = [ordered]@{ cell = $held.editorId; exit = 0; status = 'already loaded'; code = 'ok' }
-} else {
-    $load = Invoke-Mcp 'ck.cell_load' ('{"name":"' + $Cell + '"}')
-    $steps['cellLoad'] = [ordered]@{ cell = $Cell; exit = $load.exit; status = $load.reply.status; code = $load.reply.code }
-    if ($load.exit -ne 0 -or "$($load.reply.status)" -ne 'ok') {
-        $failures.Add("the cell '$Cell' did not load ($($load.reply.code) $($load.reply.message)), so the cross-check cannot run")
-        $incomplete = $true
-    }
+# Whatever the probe left behind is freed too, so the cross-check runs in -Cell and not in a cell it inherited.
+$steps['cellClose']['afterProbe'] = Close-Cell
+
+$load = Invoke-Mcp 'ck.cell_load' ('{"name":"' + $Cell + '"}')
+$steps['cellLoad'] = [ordered]@{ cell = $Cell; exit = $load.exit; status = $load.reply.status; code = $load.reply.code }
+if ($load.exit -ne 0 -or "$($load.reply.status)" -ne 'ok') {
+    $failures.Add("the cell '$Cell' did not load ($($load.reply.code) $($load.reply.message)), so the cross-check cannot run")
+    $incomplete = $true
 }
 
 if (-not $incomplete) {
@@ -187,7 +210,8 @@ if ($failures.Count -gt 0) {
 }
 
 foreach ($name in $steps.Keys) {
-    if ($name -eq 'editor') { continue }
+    # The cell state is reported inside the checks that depend on it, not as a check of its own.
+    if ($name -in @('editor', 'cellClose')) { continue }
     $step = $steps[$name]
     $verdict = if ("$($step.passed)" -eq 'True') { 'pass' } else { "exit $($step.exit)" }
     Write-Output "$name`: $verdict"
