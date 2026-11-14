@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -149,17 +150,44 @@ namespace ckagent
 			return false;
 		}
 
-		// The pose must be the verified pair: SetPosition plus the yaw matrix, with pitch left level.
-		void SetYawPose(CameraApi* camera, float x, float y, float z, float yaw)
+		// The pose must be the verified pair: SetPosition plus the measured view matrix.
+		void SetViewPose(CameraApi* camera, float x, float y, float z, float yaw, float pitch)
 		{
 			camera->SetPosition(NiPoint3{ x, y, z });
 
 			NiMatrix43 rotate{};
-			rotate.m_pEntry[0][0] = std::cos(yaw);  rotate.m_pEntry[0][1] = std::sin(yaw);  rotate.m_pEntry[0][2] = 0;
-			rotate.m_pEntry[1][0] = -std::sin(yaw); rotate.m_pEntry[1][1] = std::cos(yaw);  rotate.m_pEntry[1][2] = 0;
-			rotate.m_pEntry[2][0] = 0;              rotate.m_pEntry[2][1] = 0;              rotate.m_pEntry[2][2] = 1;
+			const ViewMatrix view = MakeViewMatrix(yaw, pitch);
+			std::memcpy(&rotate, view.m, sizeof rotate);
 			camera->SetRotation(rotate);
 		}
+
+		// The forward row must be decoded from the node when it is readable, so the aim check is not circular.
+		double AimAgainst(CameraApi* camera, const NiPoint3& from, const NiPoint3& target)
+		{
+			float forward[3] = { 0.0f, 0.0f, 0.0f };
+			if (!ReadNodeForward(camera, forward)) return 0.0;
+
+			const double dx = static_cast<double>(target.x) - from.x;
+			const double dy = static_cast<double>(target.y) - from.y;
+			const double dz = static_cast<double>(target.z) - from.z;
+			const double span = std::sqrt(dx * dx + dy * dy + dz * dz);
+			if (span < 1e-6) return 0.0;
+
+			return (forward[0] * dx + forward[1] * dy + forward[2] * dz) / span;
+		}
+	}
+
+	ViewMatrix MakeViewMatrix(float yaw, float pitch)
+	{
+		const float cy = std::cos(yaw), sy = std::sin(yaw);
+		const float cp = std::cos(pitch), sp = std::sin(pitch);
+
+		// Constraint: rows must be right, forward, up, as the editor's own LookAt writes them.
+		ViewMatrix view;
+		view.m[0] = sy;         view.m[1] = -cy;        view.m[2] = 0.0f;
+		view.m[4] = cy * cp;    view.m[5] = sy * cp;    view.m[6] = sp;
+		view.m[8] = -cy * sp;   view.m[9] = -sy * sp;   view.m[10] = cp;
+		return view;
 	}
 
 	bool RunFrameTool(const std::string& args, const FrameTarget& target, std::string& payload,
@@ -203,20 +231,17 @@ namespace ckagent
 			return false;
 
 		const NiPoint3 targetPoint = hit.ref->GetPosition();
-		SetYawPose(camera, targetPoint.x - distance * std::cos(yaw),
-			targetPoint.y - distance * std::sin(yaw), targetPoint.z, yaw);
+		SetViewPose(camera, targetPoint.x - distance * std::cos(yaw),
+			targetPoint.y - distance * std::sin(yaw), targetPoint.z, yaw, 0.0f);
 
 		const NiPoint3 after = camera->GetPosition();
-		const NiMatrix43 read = camera->GetRotate();
 
 		// Framing must be checked against the target, because the object has to sit ahead along the view row.
 		const double dx = static_cast<double>(targetPoint.x) - after.x;
 		const double dy = static_cast<double>(targetPoint.y) - after.y;
 		const double dz = static_cast<double>(targetPoint.z) - after.z;
 		const double span = std::sqrt(dx * dx + dy * dy + dz * dz);
-		const double aim = span > 1e-6
-			? (read.m_pEntry[0][0] * dx + read.m_pEntry[0][1] * dy + read.m_pEntry[0][2] * dz) / span
-			: 0.0;
+		const double aim = AimAgainst(camera, after, targetPoint);
 
 		char buf[720];
 		std::snprintf(buf, sizeof buf,
@@ -283,35 +308,35 @@ namespace ckagent
 
 		const float yaw = static_cast<float>(std::atan2(dy, dx));
 
+		// A target above or below the camera must tilt the view, because the forward row carries the pitch.
+		const float pitch = static_cast<float>(std::atan2(dz, horizontal));
+
 		// Constraint: a standoff is optional, so the camera must keep its own height and only back away when asked.
 		const float px = distance > 1.0f ? targetPoint.x - distance * static_cast<float>(std::cos(yaw))
 		                                 : before.x;
 		const float py = distance > 1.0f ? targetPoint.y - distance * static_cast<float>(std::sin(yaw))
 		                                 : before.y;
-		SetYawPose(camera, px, py, before.z, yaw);
+		SetViewPose(camera, px, py, before.z, yaw, pitch);
 
 		const NiPoint3 after = camera->GetPosition();
-		const NiMatrix43 read = camera->GetRotate();
 
-		// The pitch cannot be set through this matrix, so a target out of level must be reported as a miss.
+		// The aim must be measured from the node's forward row, because that is the row the editor looks along.
 		const double ax = static_cast<double>(targetPoint.x) - after.x;
 		const double ay = static_cast<double>(targetPoint.y) - after.y;
 		const double az = static_cast<double>(targetPoint.z) - after.z;
 		const double span = std::sqrt(ax * ax + ay * ay + az * az);
-		const double aim = span > 1e-6
-			? (read.m_pEntry[0][0] * ax + read.m_pEntry[0][1] * ay + read.m_pEntry[0][2] * az) / span
-			: 0.0;
+		const double aim = AimAgainst(camera, after, targetPoint);
 		const double vertical = span > 1e-6 ? az / span : 0.0;
 
 		char buf[720];
 		std::snprintf(buf, sizeof buf,
 			"{\"reference\":\"%s\",\"base\":\"%s\",\"formId\":\"%08X\",\"matches\":%d,"
-			"\"target\":[%.4f,%.4f,%.4f],\"camera\":[%.4f,%.4f,%.4f],\"distance\":%.2f,\"yaw\":%.4f,"
+			"\"target\":[%.4f,%.4f,%.4f],\"camera\":[%.4f,%.4f,%.4f],\"distance\":%.2f,\"yaw\":%.4f,\"pitch\":%.4f,"
 			"\"span\":%.2f,\"aim\":%.4f,\"vertical\":%.4f,\"aligned\":%s,\"references\":%lu}",
 			hit.id.c_str(), hit.baseId.c_str(), hit.ref->GetFormID(), hit.matches,
 			targetPoint.x, targetPoint.y, targetPoint.z,
 			after.x, after.y, after.z,
-			distance, yaw, span, aim, vertical,
+			distance, yaw, pitch, span, aim, vertical,
 			aim > 0.999 ? "true" : "false",
 			static_cast<unsigned long>(hit.count));
 		payload = buf;

@@ -37,8 +37,8 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 
 | Area | | What an agent can do | What is missing |
 |---|---|---|---|
-| Camera pose | `██████████████████░░` 90% | read position, rotation and scale; set position with yaw; step along the camera's own axes | pitch that actually tilts the view; orthographic / zoom control; field of view |
-| Framing and aiming | `████████████████░░░░` 80% | stand in front of a named reference at a distance and yaw; turn the current camera onto a name and report how far off-level it sits | automatic distance and height that fit the object's bounds; tilt for objects above or below |
+| Camera pose | `██████████████████░░` 90% | read position, rotation and scale; set position with yaw and pitch; step along the camera's own axes | orthographic / zoom control; field of view |
+| Framing and aiming | `████████████████░░░░` 80% | stand in front of a named reference at a distance and yaw; turn the current camera onto a name, tilting for objects above or below, and report the achieved aim | automatic distance and height that fit the object's bounds |
 | Cell navigation | `███████████████████░` 95% | list and open any interior or exterior cell by name (36 865 Commonwealth cells), confirm what is loaded | opening by grid coordinates; the World Space X/Y/Go fields |
 | Reference lookup | `███████████░░░░░░░░░` 55% | find a reference in the loaded cell by EditorID, base EditorID or form id; read its position; get named samples when a name misses | reading a reference's property sheet; listing base objects; persistent ids; picking in the render window |
 | Editor UI | `█████████████████░░░` 85% | enumerate windows and controls, read trees/lists/tabs/combos, select rows, fire `NM_DBLCLK`/`NM_CLICK`, run menu commands, press dialog buttons, list and reveal dialogs | arbitrary text entry into fields; drag and drop; context menus; keyboard simulation |
@@ -101,10 +101,8 @@ Nothing here is a promise of future work — these are gaps, listed so nobody as
 - **Placing references.** Positions can be read; nothing can be placed, moved or deleted.
 - **Assets.** The Object Window tree is readable; meshes, textures and materials are not.
 - **Load order.** A plugin can be ticked in the Data dialog; the order and the file list cannot be edited.
-- **Tilt.** `ck.camera set` accepts pitch and `ck.aim` reports the vertical offset it cannot fix: the pitch
-  rows of the camera matrix were measured not to move the view row, so a tilted view is not reachable this
-  way. The editor's own `lookat` was measured not to aim at the point given, which is why `ck.aim` computes
-  its own yaw instead.
+- **Zoom and projection.** The camera can be aimed and stood anywhere, but its field of view, orthographic
+  mode and zoom are not exposed: framing fits a distance you choose, not the object's bounds.
 
 ---
 
@@ -113,11 +111,15 @@ Nothing here is a promise of future work — these are gaps, listed so nobody as
 Everything above was measured against a live editor, not read off the SDK:
 
 - 36 865 cells listed under the Commonwealth worldspace; 3 616 references enumerated in `AndrewStation01`.
-- Camera offsets are identical inside and outside: same camera object, same `+0xC0`, same 6.0 scene
-  rotation offset, yaw 0 → view row `+X`, yaw 90° → `+Y`, at 22 528 / −43 008 world units as well as at
-  interior scale.
-- `ck.frame` on `Loot_Prewar_Safe` reports `aim 1.0000`; `ck.aim` reports `aligned:true` when the camera is
-  level with the object and `aligned:false` with a non-zero `vertical` when it is not.
+- Camera offsets are identical inside and outside: same camera object, same `+0xC0`, same row-shifted
+  scene rotation, yaw 0 → view row `+X`, yaw 90° → `+Y`, at 22 528 / −43 008 world units as well as at
+  interior scale. The view row is row 1 of the camera node's matrix (row 0 of the scene camera's), which
+  the probe confirms independently of what the tool writes.
+- `ck.frame` on `Loot_Prewar_Safe` reports `aim 1.0000`; `ck.aim` does the same from 400 units above the
+  object, writing a pitch of −1.0015 rad and a view row of `(0.5391, 0, −0.8423)`, the direction to it.
+- `lookat` at `(1000, 2000, 3000)` from `(39, 9492, 272)` lands the view on `(0.1197, −0.9329, 0.3397)`,
+  the exact unit direction, and the editor's own `LookAt` produces the same matrix. Nothing about the
+  camera object changes except the rotation, so there is no stored focus point.
 - A dialog created while the editor is not foreground stays invisible and disables the frame; CKAgent detects
   it from `status`, reveals it, retries once, and names it if it still blocks.
 

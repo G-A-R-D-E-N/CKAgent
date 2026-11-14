@@ -345,6 +345,21 @@ namespace ckagent
 			return true;
 		}
 
+		// A lookat must be judged on the node's forward row, because that row is the one the editor renders along.
+		bool AimsAt(void* camera, const NiPoint3& from, float tx, float ty, float tz)
+		{
+			float forward[3] = { 0.0f, 0.0f, 0.0f };
+			if (!ReadNodeForward(camera, forward)) return false;
+
+			const double dx = static_cast<double>(tx) - from.x;
+			const double dy = static_cast<double>(ty) - from.y;
+			const double dz = static_cast<double>(tz) - from.z;
+			const double span = std::sqrt(dx * dx + dy * dy + dz * dz);
+			if (span < 1e-6) return false;
+
+			return (forward[0] * dx + forward[1] * dy + forward[2] * dz) / span > 0.999;
+		}
+
 		bool ToolCamera(const std::string& args, std::string& payload,
 			std::string& errorCode, std::string& errorMessage)
 		{
@@ -394,11 +409,38 @@ namespace ckagent
 			float lx = 0, ly = 0, lz = 0;
 			const bool looking = std::sscanf(args.c_str(), "lookat %f %f %f", &lx, &ly, &lz) == 3;
 
+			bool lookatFromEditor = false;
+
 			if (stepped)
 				camera->MoveLocal(mx, my, mz);
 
 			if (looking)
+			{
+				// Constraint: the editor's LookAt is tried first, but what it achieved must be measured, not assumed.
+				const NiPoint3 from = camera->GetPosition();
 				camera->LookAt(NiPoint3{ lx, ly, lz });
+				lookatFromEditor = true;
+
+				if (!AimsAt(reinterpret_cast<void*>(g_camera), from, lx, ly, lz))
+				{
+					// A LookAt that missed must still leave the camera pointed at the target, so the pose is computed.
+					const double dx = static_cast<double>(lx) - camera->GetPosition().x;
+					const double dy = static_cast<double>(ly) - camera->GetPosition().y;
+					const double dz = static_cast<double>(lz) - camera->GetPosition().z;
+					const double flat = std::sqrt(dx * dx + dy * dy);
+
+					if (flat > 1e-6)
+					{
+						NiMatrix43 computed{};
+						const ViewMatrix view = MakeViewMatrix(static_cast<float>(std::atan2(dy, dx)),
+							static_cast<float>(std::atan2(dz, flat)));
+						std::memcpy(&computed, view.m, sizeof computed);
+						camera->SetRotation(computed);
+					}
+
+					lookatFromEditor = false;
+				}
+			}
 
 			if (moved)
 			{
@@ -406,20 +448,30 @@ namespace ckagent
 
 				if (oriented)
 				{
-					// Rotation must stay unverified until Gamebryo's basis is confirmed against the editor.
-					const float cy = std::cos(yaw), sy = std::sin(yaw);
-					const float cp = std::cos(pitch), sp = std::sin(pitch);
-
+					// The pose must use the measured basis: row0 right, row1 forward, row2 up.
 					NiMatrix43 rotate{};
-					rotate.m_pEntry[0][0] = cy;         rotate.m_pEntry[0][1] = sy;          rotate.m_pEntry[0][2] = 0;
-					rotate.m_pEntry[1][0] = -sy * cp;   rotate.m_pEntry[1][1] = cy * cp;     rotate.m_pEntry[1][2] = sp;
-					rotate.m_pEntry[2][0] = sy * sp;    rotate.m_pEntry[2][1] = -cy * sp;    rotate.m_pEntry[2][2] = cp;
+					const ViewMatrix view = MakeViewMatrix(yaw, pitch);
+					std::memcpy(&rotate, view.m, sizeof rotate);
 					camera->SetRotation(rotate);
 				}
 			}
 
 			const NiPoint3 after = camera->GetPosition();
 			const NiMatrix43 rotation = camera->GetRotate();
+
+			// The forward row and the achieved aim must be reported, so a lookat that missed cannot look like one that hit.
+			float forwardRow[3] = { 0.0f, 0.0f, 0.0f };
+			const bool haveForward = ReadNodeForward(reinterpret_cast<void*>(g_camera), forwardRow);
+			double lookatAim = 0.0;
+			if (haveForward && looking)
+			{
+				const double ax = static_cast<double>(lx) - after.x;
+				const double ay = static_cast<double>(ly) - after.y;
+				const double az = static_cast<double>(lz) - after.z;
+				const double span = std::sqrt(ax * ax + ay * ay + az * az);
+				if (span > 1e-6)
+					lookatAim = (forwardRow[0] * ax + forwardRow[1] * ay + forwardRow[2] * az) / span;
+			}
 
 			const auto* sceneTranslate = reinterpret_cast<const float*>(niCamera + kNiCameraTranslate);
 			const auto* sceneRotate = reinterpret_cast<const float*>(niCamera + kNiCameraWorld);
@@ -443,18 +495,22 @@ namespace ckagent
 				for (int col = 0; col < 3; ++col)
 					rotationDrift += std::fabs(worldRotate[row * kNiRowStride + col] - sceneRotate[row * kNiRowStride + col]);
 
-			// Invariant: the scene camera carries a fixed local rotation (measured 6.0 total) over the node, so only
-			// translation is comparable directly; the invariant offset is reported instead.
+			// Invariant: the scene camera's rotation is the node's shifted by one row, so only translation is
+			// comparable directly; the rotation difference is reported as a pose-dependent offset instead.
 			const bool synced = drift < 0.5;
 
 			// The reply must name every object it touched: a resolution and a guess have to look different.
-			char buf[1024];
+			// A lookat must say which path aimed it, so the editor's own answer is never mistaken for a computed one.
+			const char* via = !looking ? "direct" : (lookatFromEditor ? "lookat-editor" : "lookat-computed");
+
+			char buf[1400];
 			std::snprintf(buf, sizeof buf,
 				"{\"camera\":\"0x%llX\",\"sceneCamera\":\"0x%llX\","
 				"\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"wasX\":%.4f,\"wasY\":%.4f,\"wasZ\":%.4f,"
 				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"scale\":%.4f,"
 				"\"scene\":[%.4f,%.4f,%.4f],\"rotationOffset\":%.4f,\"positionSynced\":%s,"
 				"\"step\":[%.4f,%.4f,%.4f],\"moved\":%s,"
+				"\"forward\":[%.4f,%.4f,%.4f],\"aim\":%.4f,\"via\":\"%s\","
 				"\"window\":\"0x%llX\",\"resolvedAt\":\"%s\"}",
 				static_cast<unsigned long long>(g_camera),
 				static_cast<unsigned long long>(niCamera),
@@ -470,6 +526,7 @@ namespace ckagent
 				synced ? "true" : "false",
 				stepDelta[0], stepDelta[1], stepDelta[2],
 				moved ? "true" : "false",
+				forwardRow[0], forwardRow[1], forwardRow[2], lookatAim, via,
 				static_cast<unsigned long long>(g_renderWindow),
 				g_cameraWhen);
 
@@ -851,6 +908,23 @@ namespace ckagent
 				g_pipe = nullptr;
 			}
 		}
+	}
+
+	// The forward row must be read from the node itself, so a verification cannot pass on the tool's own write.
+	bool ReadNodeForward(void* cameraPointer, float out[3])
+	{
+		auto* camera = reinterpret_cast<CameraApi*>(cameraPointer);
+		auto* node = camera ? camera->GetNode() : nullptr;
+		if (!node) return false;
+
+		// Offset arithmetic must go through the node's own world rotation, because the camera object stores a local pose.
+		const auto* rotate = reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraWorld);
+		if (!IsReadable(rotate, kNiCameraReadable)) return false;
+
+		out[0] = rotate[kNiRowStride + 0];
+		out[1] = rotate[kNiRowStride + 1];
+		out[2] = rotate[kNiRowStride + 2];
+		return true;
 	}
 
 	bool Start(std::uint64_t runtimeVersion) noexcept

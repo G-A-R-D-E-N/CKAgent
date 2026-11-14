@@ -325,9 +325,9 @@ public sealed class CameraTools
      Description("Rotate the camera until a named reference in the loaded cell is straight ahead, keeping " +
                  "the camera where it stands so the object is seen from the view already chosen. reference " +
                  "matches a reference EditorID, its base object EditorID, or an 8-digit form id; optional " +
-                 "distance backs the camera away to that standoff first. Reports the yaw it wrote, the " +
-                 "achieved aim and the vertical offset: pitch cannot be set, so an object above or below " +
-                 "the camera comes back with aligned=false and a non-zero vertical. Needs a loaded cell " +
+                 "distance backs the camera away to that standoff first. Reports the yaw and pitch it wrote " +
+                 "and the achieved aim, measured against the node's own view row, so an object above or " +
+                 "below the camera is aimed at rather than reported as a miss. Needs a loaded cell " +
                  "and CKPE with CKAgent.dll installed.")]
     public CameraResult Aim(string reference, double? distance = null)
     {
@@ -362,9 +362,10 @@ public sealed class CameraTools
      Description("Drive the render window camera through the CKAgent plugin. mode=Get returns the " +
                  "scene camera's position, rotation matrix and scale; mode=Set places it at x/y/z with " +
                  "optional yaw/pitch (radians, +pitch tilts up); mode=Move steps by x/y/z in the camera's " +
-                 "own axes, so +y is its right and not world +Y; mode=Lookat forwards x/y/z to the " +
-                 "editor's LookAt, which changes the orientation but was measured not to point at that " +
-                 "point, so prefer mode=Set for a known view. Every mode returns the resulting position " +
+                 "own axes, so +y is its right and not world +Y; mode=Lookat aims at the world point " +
+                 "x/y/z, calling the editor's LookAt and then writing the pose it computes when that " +
+                 "does not verify, and reports which path aimed it as via plus the achieved aim. Every " +
+                 "mode returns the resulting position " +
                  "and matrix. Needs a loaded cell and reports camera_transform_unverified when the scene " +
                  "camera has no usable transform yet. " +
                  "Requires CKPE plus CKAgent.dll in <game>\\CKPEPlugins\\.")]
