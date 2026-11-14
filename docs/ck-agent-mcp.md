@@ -367,7 +367,7 @@ matching the shape of `BGS/tools/mcp`. It needs no plugin to run:
 | `ck.invoke_command` | resolve `File/Save`, `World/PreCombine Geometry For World` or an id, then `WM_COMMAND`; `dry_run` resolves only; refuses while a modal dialog has the window disabled |
 | `ck.save` | copy the plugin to `<state>\backups\<stamp>\`, post `File/Save`, then confirm the file changed — and report `save_not_observed` rather than claiming success |
 | `ck.camera` | read or set the camera pose through the plugin. Reads and writes `BGSRenderWindowCamera` (window at `0x143D491E8`, camera object at `+0xC0`) via its own `SetPosition`/`SetRotation`, because the `NiCamera` at `+0x10` is a slave the editor overwrites every frame — a write there is reverted within 400 ms (measured). Reports `positionSynced` (the scene camera's translation matched the request), `rotationOffset` (the pose-dependent `Σ|node − scene|`, since the scene camera's rotation is the node's shifted by one row), and for a lookat the `forward` row and the achieved `aim` plus a `via` naming whether the editor's own `LookAt` or the computed pose aimed it; `mode=orbit` circles a point at a given distance and angle, sets the editor's pivot to that point, and reports the pivot it read back, the radius and the aim; `camera_transform_unverified` until a cell gives a usable transform; `CKPEUnavailable` without the plugin |
-| `ck.aim` | turn the camera on a named reference without moving it, so an object is inspected from the view already chosen; optional `distance` backs off to that standoff first; reports the yaw and pitch it wrote, the achieved aim and the vertical offset, and says `aligned=false` when the view still misses. It tilts, because the forward row carries the pitch: the pitch is computed from the position the camera ends up at, so a standoff is aimed from where it leaves the camera, and a target straight above or below keeps the current heading and tilts to the pole rather than being refused. `tools/aim-probe.ps1` asserts that contract against a live editor — level, above, below, directly overhead and at a standoff — checking the camera did not move and that the view row re-read afterwards dots the target |
+| `ck.aim` | turn the camera on a named reference without moving it, so an object is inspected from the view already chosen; optional `distance` backs off to that standoff first; reports the yaw and pitch it wrote, the achieved aim and the vertical offset, and says `aligned=false` when the view still misses. It tilts, because the forward row carries the pitch: the pitch is computed from the position the camera ends up at, so a standoff is aimed from where it leaves the camera, and a target straight above or below keeps the current heading and tilts to the pole rather than being refused. A comma-joined list aims at several references in one call, in order, from the same camera position, so a small area can be scanned without the caller computing poses; each step reports its own yaw, pitch and aim, and a standoff is refused with a chain because it moves the camera. `tools/aim-probe.ps1` asserts that contract against a live editor — level, above, below, directly overhead, at a standoff and as a two-step chain — checking the camera did not move and that the view row re-read afterwards dots the target |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row index, optionally filtered — so a cell can be chosen by name instead of by index |
 | `ck.cell_load` | open a cell by EditorID or display name through the Cell View's own `NM_DBLCLK` handler; reports the item it opened |
 | `ck.cell` | the cell the render window holds, by EditorID and form id, so a load is confirmed from the reply instead of inferred from a pointer |
@@ -536,6 +536,14 @@ heading and tilts to the pole instead of refusing. `Loot_Prewar_Safe` at `39.560
 Before this, the same standoff reached only `aim 0.8482` (`aligned: false`), because the pitch came from
 the camera's pre-standoff distance, and a target straight overhead was refused with `too_close`. That code
 now means only that the camera is on top of the target, where no direction exists.
+
+A chain aims at each reference in the order given, from the position the camera already holds:
+
+| Request | Reply |
+|---|---|
+| `aim MS07cCompanionMarker,DefaultEnableDisableTrigger` | `steps: 2`, step pitches `-0.0897` and `-0.0937` (each its own target's angle), final `aim 1.0000` |
+| `aim Loot_Prewar_Safe,ZZZNoRef` | `ref_not_found`: `step 2 of 2 (ZZZNoRef): …` |
+| `aim Loot_Prewar_Safe,MS07cCompanionMarker 256` | `bad_args`: a chain rotates in place, and a standoff moves the camera |
 
 ### Camera move and lookat, measured
 

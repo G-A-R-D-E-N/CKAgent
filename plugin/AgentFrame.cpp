@@ -287,86 +287,164 @@ namespace ckagent
 
 		const float distance = words.size() > 1 ? static_cast<float>(std::atof(words[1].c_str())) : 0.0f;
 
-		Match hit;
-		if (!ResolveReference(cell, words[0], hit, errorCode, errorMessage))
-			return false;
-
-		const NiPoint3 targetPoint = hit.ref->GetPosition();
-		const NiPoint3 before = camera->GetPosition();
-
-		// Constraint: the pitch must come from where the camera ends up, or a standoff tilts at the old distance.
-		const double dx = static_cast<double>(targetPoint.x) - before.x;
-		const double dy = static_cast<double>(targetPoint.y) - before.y;
-		const double dz = static_cast<double>(targetPoint.z) - before.z;
-		const double horizontal = std::sqrt(dx * dx + dy * dy);
-
-		// Invariant: a target straight above or below has no yaw of its own, so the view heading is kept.
-		float headingX = 1.0f;
-		float headingY = 0.0f;
-		if (horizontal > 1e-3)
+		// Constraint: a chain is one argument with commas, so the optional standoff keeps its own word.
+		std::vector<std::string> chain;
 		{
-			headingX = static_cast<float>(dx / horizontal);
-			headingY = static_cast<float>(dy / horizontal);
-		}
-		else
-		{
-			float forward[3] = { 0.0f, 0.0f, 0.0f };
-			if (ReadSceneView(camera, forward))
+			std::string item;
+			for (char c : words[0])
 			{
-				const double flat = std::sqrt(static_cast<double>(forward[0]) * forward[0] +
-					static_cast<double>(forward[1]) * forward[1]);
-				if (flat > 1e-4)
+				if (c == ',')
 				{
-					headingX = static_cast<float>(forward[0] / flat);
-					headingY = static_cast<float>(forward[1] / flat);
+					if (!item.empty()) chain.push_back(item);
+					item.clear();
+				}
+				else item.push_back(c);
+			}
+			if (!item.empty()) chain.push_back(item);
+		}
+
+		if (chain.empty())
+		{
+			errorCode = "bad_args";
+			errorMessage = "aim needs at least one reference";
+			return false;
+		}
+
+		// Constraint: a chain exists to rotate in place, so a standoff must be refused rather than moving it.
+		if (chain.size() > 1 && distance > 1.0f)
+		{
+			errorCode = "bad_args";
+			errorMessage = "aim a chain without a distance: it rotates in place and a standoff moves the camera";
+			return false;
+		}
+
+		std::string steps;
+		std::string lastReference;
+		std::string lastBase;
+		unsigned int lastFormId = 0;
+		int matches = 0;
+		unsigned long references = 0;
+		double yawOut = 0.0;
+		double pitchOut = 0.0;
+		double spanOut = 0.0;
+		double aimOut = 0.0;
+		double verticalOut = 0.0;
+		double targetOut[3] = { 0.0, 0.0, 0.0 };
+		NiPoint3 lastAfter{};
+
+		for (std::size_t i = 0; i < chain.size(); ++i)
+		{
+			Match hit;
+			if (!ResolveReference(cell, chain[i], hit, errorCode, errorMessage))
+			{
+				// Constraint: a failed step must name itself, or a chain that stops halfway looks like a bad name.
+				if (chain.size() > 1)
+				{
+					errorMessage = "step " + std::to_string(i + 1) + " of " + std::to_string(chain.size()) +
+						" (" + chain[i] + "): " + errorMessage;
+				}
+				return false;
+			}
+
+			const NiPoint3 targetPoint = hit.ref->GetPosition();
+			const NiPoint3 before = camera->GetPosition();
+
+			// Constraint: the pitch must come from where the camera ends up, or a standoff tilts at the old distance.
+			const double dx = static_cast<double>(targetPoint.x) - before.x;
+			const double dy = static_cast<double>(targetPoint.y) - before.y;
+			const double dz = static_cast<double>(targetPoint.z) - before.z;
+			const double horizontal = std::sqrt(dx * dx + dy * dy);
+
+			// Invariant: a target straight above or below has no yaw of its own, so the view heading is kept.
+			float headingX = 1.0f;
+			float headingY = 0.0f;
+			if (horizontal > 1e-3)
+			{
+				headingX = static_cast<float>(dx / horizontal);
+				headingY = static_cast<float>(dy / horizontal);
+			}
+			else
+			{
+				float forward[3] = { 0.0f, 0.0f, 0.0f };
+				if (ReadSceneView(camera, forward))
+				{
+					const double flat = std::sqrt(static_cast<double>(forward[0]) * forward[0] +
+						static_cast<double>(forward[1]) * forward[1]);
+					if (flat > 1e-4)
+					{
+						headingX = static_cast<float>(forward[0] / flat);
+						headingY = static_cast<float>(forward[1] / flat);
+					}
 				}
 			}
+
+			// Constraint: a standoff is optional, so the camera must keep its own height and only back away when asked.
+			const float px = distance > 1.0f ? targetPoint.x - distance * headingX : before.x;
+			const float py = distance > 1.0f ? targetPoint.y - distance * headingY : before.y;
+
+			const double outX = static_cast<double>(targetPoint.x) - px;
+			const double outY = static_cast<double>(targetPoint.y) - py;
+			const double outZ = static_cast<double>(targetPoint.z) - before.z;
+			const double flatSpan = std::sqrt(outX * outX + outY * outY);
+			const double reach = std::sqrt(outX * outX + outY * outY + outZ * outZ);
+			if (reach < 1e-3)
+			{
+				errorCode = "too_close";
+				errorMessage = "the camera is on top of " + hit.id + "; there is no direction to aim";
+				return false;
+			}
+
+			// Invariant: at the pole the yaw is whatever the heading was, and the pitch is the pole itself.
+			const float yaw = flatSpan > 1e-4 ? static_cast<float>(std::atan2(outY, outX))
+			                                 : static_cast<float>(std::atan2(headingY, headingX));
+			const float pitch = flatSpan > 1e-4 ? static_cast<float>(std::atan2(outZ, flatSpan))
+			                                   : (outZ > 0.0 ? 1.5707963f : -1.5707963f);
+			SetViewPose(camera, px, py, before.z, yaw, pitch);
+
+			const NiPoint3 after = camera->GetPosition();
+
+			// The aim must be measured from the scene camera's view row, which is what the editor renders.
+			const double ax = static_cast<double>(targetPoint.x) - after.x;
+			const double ay = static_cast<double>(targetPoint.y) - after.y;
+			const double az = static_cast<double>(targetPoint.z) - after.z;
+			const double span = std::sqrt(ax * ax + ay * ay + az * az);
+			const double aim = AimAgainst(camera, after, targetPoint);
+			const double vertical = span > 1e-6 ? az / span : 0.0;
+
+			char step[512];
+			std::snprintf(step, sizeof step,
+				"%s{\"reference\":\"%s\",\"formId\":\"%08X\",\"yaw\":%.4f,\"pitch\":%.4f,\"aim\":%.4f,\"aligned\":%s}",
+				steps.empty() ? "" : ",", hit.id.c_str(), hit.ref->GetFormID(), yaw, pitch, aim,
+				aim > 0.999 ? "true" : "false");
+			steps += step;
+
+			lastReference = hit.id;
+			lastBase = hit.baseId;
+			lastFormId = hit.ref->GetFormID();
+			matches = hit.matches;
+			references = hit.count;
+			targetOut[0] = targetPoint.x;
+			targetOut[1] = targetPoint.y;
+			targetOut[2] = targetPoint.z;
+			lastAfter = after;
+			yawOut = yaw;
+			pitchOut = pitch;
+			spanOut = span;
+			aimOut = aim;
+			verticalOut = vertical;
 		}
 
-		// Constraint: a standoff is optional, so the camera must keep its own height and only back away when asked.
-		const float px = distance > 1.0f ? targetPoint.x - distance * headingX : before.x;
-		const float py = distance > 1.0f ? targetPoint.y - distance * headingY : before.y;
-
-		const double outX = static_cast<double>(targetPoint.x) - px;
-		const double outY = static_cast<double>(targetPoint.y) - py;
-		const double outZ = static_cast<double>(targetPoint.z) - before.z;
-		const double flatSpan = std::sqrt(outX * outX + outY * outY);
-		const double reach = std::sqrt(outX * outX + outY * outY + outZ * outZ);
-		if (reach < 1e-3)
-		{
-			errorCode = "too_close";
-			errorMessage = "the camera is on top of " + hit.id + "; there is no direction to aim";
-			return false;
-		}
-
-		// Invariant: at the pole the yaw is whatever the heading was, and the pitch is the pole itself.
-		const float yaw = flatSpan > 1e-4 ? static_cast<float>(std::atan2(outY, outX))
-		                                 : static_cast<float>(std::atan2(headingY, headingX));
-		const float pitch = flatSpan > 1e-4 ? static_cast<float>(std::atan2(outZ, flatSpan))
-		                                   : (outZ > 0.0 ? 1.5707963f : -1.5707963f);
-		SetViewPose(camera, px, py, before.z, yaw, pitch);
-
-		const NiPoint3 after = camera->GetPosition();
-
-		// The aim must be measured from the scene camera's view row, which is what the editor renders.
-		const double ax = static_cast<double>(targetPoint.x) - after.x;
-		const double ay = static_cast<double>(targetPoint.y) - after.y;
-		const double az = static_cast<double>(targetPoint.z) - after.z;
-		const double span = std::sqrt(ax * ax + ay * ay + az * az);
-		const double aim = AimAgainst(camera, after, targetPoint);
-		const double vertical = span > 1e-6 ? az / span : 0.0;
-
-		char buf[720];
+		char buf[4096];
 		std::snprintf(buf, sizeof buf,
 			"{\"reference\":\"%s\",\"base\":\"%s\",\"formId\":\"%08X\",\"matches\":%d,"
 			"\"target\":[%.4f,%.4f,%.4f],\"camera\":[%.4f,%.4f,%.4f],\"distance\":%.2f,\"yaw\":%.4f,\"pitch\":%.4f,"
-			"\"span\":%.2f,\"aim\":%.4f,\"vertical\":%.4f,\"aligned\":%s,\"references\":%lu}",
-			hit.id.c_str(), hit.baseId.c_str(), hit.ref->GetFormID(), hit.matches,
-			targetPoint.x, targetPoint.y, targetPoint.z,
-			after.x, after.y, after.z,
-			distance, yaw, pitch, span, aim, vertical,
-			aim > 0.999 ? "true" : "false",
-			static_cast<unsigned long>(hit.count));
+			"\"span\":%.2f,\"aim\":%.4f,\"vertical\":%.4f,\"aligned\":%s,\"references\":%lu,\"steps\":%d,\"chain\":[%s]}",
+			lastReference.c_str(), lastBase.c_str(), lastFormId, matches,
+			targetOut[0], targetOut[1], targetOut[2],
+			lastAfter.x, lastAfter.y, lastAfter.z,
+			distance, yawOut, pitchOut, spanOut, aimOut, verticalOut,
+			aimOut > 0.999 ? "true" : "false",
+			references, static_cast<int>(chain.size()), steps.c_str());
 		payload = buf;
 		return true;
 	}

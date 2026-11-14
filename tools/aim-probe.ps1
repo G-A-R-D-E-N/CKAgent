@@ -18,7 +18,9 @@ report and the pose are checked separately:
      view row is re-read afterwards and dotted with that direction, so a pose the editor rejected cannot
      pass on the reply alone;
   4. one case asks for a standoff, where the camera is expected to move to exactly that distance and the
-     tilt to be computed from the new position rather than the old one.
+     tilt to be computed from the new position rather than the old one;
+  5. one case aims at two references in a single call, which must rotate in place for both, report each
+     step's own tilt, finish on the last target, and refuse a standoff that would move the camera.
 
 The aim direction and the view row are both read back through the plugin, which is the same source the
 server reports from - so this checks behaviour and arithmetic, not the plugin's decode of the scene camera.
@@ -279,6 +281,107 @@ if ($reply.status -ne 'ok') {
 
 $observed['standoff'] = $record
 
+# 4. A chain must rotate in place for every target and report each step, so aiming at only the first one fails.
+# The names come from the cell itself: ck.frame names candidates when a reference is not found.
+$missed = Invoke-Mcp 'ck.frame' (@{ reference = 'ZZZNoSuchReference' } | ConvertTo-Json -Compress)
+$candidates = @()
+if ("$($missed.message)" -match 'for example: (.*)$') {
+    $candidates = @($Matches[1] -split ',\s*' | Where-Object { $_ -and $_ -ne $Reference } | Select-Object -First 2)
+}
+
+$chainTargets = @()
+foreach ($name in $candidates) {
+    # Framing moves the camera, so every position is learned before the chain is aimed.
+    $framed = Invoke-Mcp 'ck.frame' (@{ reference = $name; distance = 256 } | ConvertTo-Json -Compress)
+    if ($framed.status -ne 'ok') {
+        $failures.Add("chain: '$name' could not be framed to learn its position: $($framed.code) $($framed.message)")
+        continue
+    }
+    $point = $framed.payload | ConvertFrom-Json
+    $chainTargets += , @("$($point.reference)", "$($point.formId)", [double]$point.target[0], [double]$point.target[1], [double]$point.target[2])
+}
+
+if ($chainTargets.Count -lt 2) {
+    $failures.Add('the cell offered fewer than two usable references, so the chain case could not run')
+} else {
+    $midX = ($chainTargets[0][2] + $chainTargets[1][2]) / 2
+    $midY = ($chainTargets[0][3] + $chainTargets[1][3]) / 2
+    $midZ = ($chainTargets[0][4] + $chainTargets[1][4]) / 2
+    Invoke-Plugin ("camera set $(Format-Number ($midX + 400)) $(Format-Number $midY) $(Format-Number ($midZ + 120)) 0 0") | Out-Null
+    $before = Get-Camera
+
+    $names = "$($chainTargets[0][0]),$($chainTargets[1][0])"
+    $reply = Invoke-Mcp 'ck.aim' (@{ reference = $names } | ConvertTo-Json -Compress)
+    $record = [ordered]@{ request = $names; status = $reply.status; code = $reply.code }
+
+    if ($reply.status -ne 'ok') {
+        $failures.Add("chain: ck.aim refused ($($reply.code)): $($reply.message)")
+    } else {
+        $payload = $reply.payload | ConvertFrom-Json
+        $record['steps'] = $payload.steps
+        $record['aim'] = $payload.aim
+        $record['aligned'] = $payload.aligned
+        $record['camera'] = "$($payload.camera[0]) $($payload.camera[1]) $($payload.camera[2])"
+
+        if ([int]$payload.steps -ne 2 -or @($payload.chain).Count -ne 2) {
+            $failures.Add("chain: the reply reports $($payload.steps) steps and $(@($payload.chain).Count) chain entries, not 2")
+        }
+
+        foreach ($axis in @('x', 'y', 'z')) {
+            $slot = @{ x = 0; y = 1; z = 2 }[$axis]
+            $drift = [math]::Abs([double]$payload.camera[$slot] - [double]$before.$axis)
+            if ($drift -gt 0.01) {
+                $failures.Add("chain: the camera moved $([math]::Round($drift, 4)) on $axis, but a chain must rotate in place")
+            }
+        }
+
+        for ($i = 0; $i -lt [math]::Min(2, @($payload.chain).Count); $i++) {
+            $step = @($payload.chain)[$i]
+            $targetPoint = $chainTargets[$i]
+            $dx = [double]$targetPoint[2] - [double]$before.x
+            $dy = [double]$targetPoint[3] - [double]$before.y
+            $dz = [double]$targetPoint[4] - [double]$before.z
+            $flat = [math]::Sqrt($dx * $dx + $dy * $dy)
+            $expected = if ($flat -gt 1e-3) { [math]::Atan2($dz, $flat) } elseif ($dz -gt 0) { [math]::PI / 2 } else { -[math]::PI / 2 }
+            $record["step$($i + 1)Pitch"] = $step.pitch
+            $record["step$($i + 1)Expected"] = [math]::Round($expected, 4)
+
+            if ([math]::Abs([double]$step.aim - 1.0) -gt $Tolerance) {
+                $failures.Add("chain step $($i + 1) ($($step.reference)): aim is $($step.aim), so that target was not centred")
+            }
+            if ([math]::Abs([double]$step.pitch - $expected) -gt 2e-3) {
+                $failures.Add("chain step $($i + 1) ($($step.reference)): pitch is $($step.pitch) but its own camera-target angle is $([math]::Round($expected, 4))")
+            }
+        }
+
+        # The final pose must belong to the last target, or the chain stopped early and still said ok.
+        $last = $chainTargets[1]
+        $ldx = [double]$last[2] - [double]$payload.camera[0]
+        $ldy = [double]$last[3] - [double]$payload.camera[1]
+        $ldz = [double]$last[4] - [double]$payload.camera[2]
+        $length = [math]::Sqrt($ldx * $ldx + $ldy * $ldy + $ldz * $ldz)
+        $after = Get-Camera
+        $dot = (([double]$after.forward[0] * $ldx) + ([double]$after.forward[1] * $ldy) + ([double]$after.forward[2] * $ldz)) / $length
+        $record['forwardDotLast'] = [math]::Round($dot, 5)
+        if ($dot -lt 0.9999) {
+            $failures.Add("chain: the final view dots the last target at $([math]::Round($dot, 5)), so the chain did not finish on it")
+        }
+
+        if ("$($payload.reference)" -ne "$($last[0])") {
+            $failures.Add("chain: the reply names '$($payload.reference)' as its target, not the last chain entry '$($last[0])'")
+        }
+
+        # A standoff moves the camera, which is the opposite of what a chain is for, so it must be refused.
+        $refused = Invoke-Mcp 'ck.aim' (@{ reference = $names; distance = 128 } | ConvertTo-Json -Compress)
+        $record['refusedWithDistance'] = "$($refused.status)/$($refused.code)"
+        if ($refused.status -ne 'error' -or "$($refused.code)" -ne 'bad_args') {
+            $failures.Add("chain: a chain with a distance was not refused ($($refused.status)/$($refused.code)); it must not move the camera")
+        }
+    }
+
+    $observed['chain'] = $record
+}
+
 $evidenceJson = [ordered]@{ aim = $observed; failures = @($failures); passed = ($failures.Count -eq 0) } | ConvertTo-Json -Depth 6
 if ($Evidence) { $evidenceJson | Set-Content -LiteralPath $Evidence -Encoding utf8 }
 
@@ -287,6 +390,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output 'PASS ck.aim kept the camera in place and centred the target level, above, below, overhead and at a standoff'
+Write-Output 'PASS ck.aim kept the camera in place and centred every target: level, above, below, overhead, at a standoff, and in a two-step chain'
 Write-Output $evidenceJson
 exit 0

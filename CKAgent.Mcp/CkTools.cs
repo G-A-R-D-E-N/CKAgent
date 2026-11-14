@@ -324,8 +324,11 @@ public sealed class CameraTools
     [McpServerTool(Name = "ck.aim"),
      Description("Rotate the camera until a named reference in the loaded cell is straight ahead, keeping " +
                  "the camera where it stands so the object is seen from the view already chosen. reference " +
-                 "matches a reference EditorID, its base object EditorID, or an 8-digit form id; optional " +
-                 "distance backs the camera away to that standoff first, and the tilt is computed from where " +
+                 "matches a reference EditorID, its base object EditorID, or an 8-digit form id, and may be a " +
+                 "comma-joined list aimed in order from the same camera position, which scans a small area " +
+                 "without the caller computing poses; optional " +
+                 "distance backs the camera away to that standoff first and is refused with a list, because it " +
+                 "moves the camera; the tilt is computed from where " +
                  "that leaves the camera. A target straight above or below it keeps the current heading and " +
                  "tilts to the pole. Reports the yaw and pitch it wrote and the achieved aim, measured " +
                  "against the scene camera's own view row rather than the matrix just written, so an object " +

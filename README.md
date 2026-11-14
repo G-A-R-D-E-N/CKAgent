@@ -234,9 +234,10 @@ that the code failed, and the dialog is always dismissed with Cancel so the load
 `tools/aim-probe.ps1` covers the aim contract the same way: it places the camera level, above, below and
 directly over one reference, calls `ck.aim` through the server, and asserts the camera did not move, the
 aim is 1.0, the tilt equals the angle between camera and target, and the view row re-read afterwards dots
-that direction. A last case asks for a standoff, where the camera must settle exactly that far away and the
-tilt must come from the new position. It loads the cell itself when needed; exit 2 means the cell or the
-reference was not found.
+that direction. Another case asks for a standoff, where the camera must settle exactly that far away and
+the tilt must come from the new position, and a last one aims at two references in a single call, which
+must turn to each in order and finish on the last. It loads the cell itself when needed; exit 2 means the
+cell or the reference was not found.
 
 A second phase covers the still-blocked reply. It starts the server with `CKAGENT_TEST_DISMISS_FAILS=1`, so
 the dismissal is skipped — the only way to reach that branch, because a dialog the server does handle is
