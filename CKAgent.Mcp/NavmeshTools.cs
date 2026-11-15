@@ -642,17 +642,23 @@ public sealed partial class NavmeshTools
     private NavmeshExpected? ReadLoadedGeometry() => Geometry(ReadLoadedNumbers());
 
     // Constraint: a run that answers the user must leave a record of what it did, so the proof is not the chat itself.
-    private string? WriteEvidence(string mode, CellNumbers? numbers, NavmeshCheckEvidence check,
+    private string? WriteEvidence(string mode, CellNumbers? numbers, NavmeshCheckEvidence? check,
+                                  NavmeshPersistence? persistence, string? prunedJson, string message)
+    {
+        uint cellId = numbers is not null && NavmeshPersist.TryParseFormId(numbers.FormId, out uint parsed)
+            ? parsed
+            : 0;
+
+        return WriteEvidence(mode, numbers?.EditorId ?? "", cellId, check, persistence, prunedJson, message);
+    }
+
+    // Constraint: every path that writes a cell leaves the same record, so a sweep and a single apply are provable alike.
+    private string? WriteEvidence(string mode, string cellName, uint cellFormId, NavmeshCheckEvidence? check,
                                   NavmeshPersistence? persistence, string? prunedJson, string message)
     {
         try
         {
-            uint cellId = numbers is not null && NavmeshPersist.TryParseFormId(numbers.FormId, out uint parsed)
-                ? parsed
-                : 0;
-
-            return NavmeshEvidence.Write(_paths, mode, numbers?.EditorId ?? "", cellId, check, persistence, prunedJson,
-                message);
+            return NavmeshEvidence.Write(_paths, mode, cellName, cellFormId, check, persistence, prunedJson, message);
         }
         catch (IOException)
         {
@@ -706,15 +712,20 @@ public sealed partial class NavmeshTools
         // Constraint: this call is how a run that outlasted its budget is finished, so it persists the pass it reads.
         (NavmeshPersistence persistence, string saveJson) = SaveAndVerify("nav.save confirm", timeoutSeconds);
 
+        // Constraint: a cover pass that reaches disk leaves the same record an apply does, or its proof is the answer.
+        string? evidencePath = WriteEvidence("cover", ReadLoadedNumbers(), null, persistence, null, summary);
+        string trail = evidencePath is null ? "" : $"; evidence: {evidencePath}";
+
         string envelope = "{\"cover\":" + counts + ",\"save\":" + saveJson +
-                          ",\"persistence\":" + JsonSerializer.Serialize(persistence, EnvelopeJson) + "}";
+                          ",\"persistence\":" + JsonSerializer.Serialize(persistence, EnvelopeJson) +
+                          ",\"evidence\":" + (evidencePath is null ? "null" : JsonSerializer.Serialize(evidencePath)) + "}";
 
         if (!persistence.Persisted)
             return new NavmeshResult("error", persistence.Code,
-                summary + $", but the cell is not persisted ({persistence.Code}): {persistence.Message}",
+                summary + $", but the cell is not persisted ({persistence.Code}): {persistence.Message}" + trail,
                 envelope, _paths.CkpeLogPath, null);
 
-        return new NavmeshResult("ok", "saved", summary + ", saved and read back: " + persistence.Message,
+        return new NavmeshResult("ok", "saved", summary + ", saved and read back: " + persistence.Message + trail,
             envelope, _paths.CkpeLogPath, null);
     }
 
@@ -792,6 +803,16 @@ public sealed partial class NavmeshTools
                    ",\"persistence\":" + JsonSerializer.Serialize(persistence, EnvelopeJson) + "}";
 
         (string status, string verdictCode, string verdictMessage) = CoverVerdict(persistence, finished);
+
+        // Constraint: a cover pass that reaches disk leaves the same record an apply does, or its proof is the answer.
+        string? evidencePath = WriteEvidence("cover", ReadLoadedNumbers(), null, persistence, null, verdictMessage);
+
+        if (evidencePath is not null)
+        {
+            verdictMessage += $"; evidence: {evidencePath}";
+            envelope = envelope[..^1] + ",\"evidence\":" + JsonSerializer.Serialize(evidencePath) + "}";
+        }
+
         return new NavmeshResult(status, verdictCode, verdictMessage, envelope, _paths.CkpeLogPath, ReadAfter(offset, rows));
     }
 

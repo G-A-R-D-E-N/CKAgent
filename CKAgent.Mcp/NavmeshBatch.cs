@@ -372,6 +372,7 @@ public sealed partial class NavmeshTools
             string outcomeCode = agree ? "meshed" : "disagree";
             object? saved = null;
             object? persistence = null;
+            string? evidencePath = null;
             bool persisted = false;
 
             if (agree && save)
@@ -409,6 +410,16 @@ public sealed partial class NavmeshTools
                     readBack = check.ReadBack,
                 };
 
+                // Constraint: a swept cell leaves the same record a single apply does, or a plugin-wide pass has no
+                // proof on disk for the cells it delivered.
+                uint savedFormId = NavmeshPersist.TryParseFormId(loaded.FormId, out uint parsedFormId) ? parsedFormId : 0;
+
+                if (savedFormId != 0)
+                {
+                    evidencePath = WriteEvidence("batch_mesh", row.CleanId, savedFormId, null, check, null,
+                        $"{row.CleanId}: {check.Code}");
+                }
+
                 if (!persisted)
                 {
                     // Constraint: a mesh still in memory is reported as unfinished, never as a delivered cell.
@@ -433,6 +444,7 @@ public sealed partial class NavmeshTools
                 loaded = true,
                 code = outcomeCode,
                 persisted,
+                evidence = evidencePath,
                 save = saved,
                 persistence,
                 strip,

@@ -638,6 +638,37 @@ public sealed class SavePersistTests
         Assert.Equal(0, quiet.RootElement.GetProperty("pruned").GetArrayLength());
     }
 
+    /// Regression: a cover pass and a plugin-wide sweep write a cell without running the check gate, so their delivery
+    /// had no record at all. The same writer must carry such a save with no check block rather than needing one.
+    [Fact]
+    public void ASweepOrCoverSaveWritesTheSameRecordWithoutACheckBlock()
+    {
+        using var install = new TestInstall();
+
+        const uint cell = 0x00001E45;
+        NavmeshExpected expected = NavmeshPersist.Expect(NavmeshPersist.Read(Fixture("CKAgentNavE2E.esp")), cell);
+        NavmeshPersistence persistence = NavmeshPersist.Verify(Fixture("CKAgentNavE2E.esp"), expected);
+
+        string path = NavmeshEvidence.Write(install.Paths, "batch_mesh", "DmndRadio01", cell, null, persistence, null,
+            "DmndRadio01: persisted");
+
+        Assert.True(File.Exists(path));
+
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+        JsonElement root = document.RootElement;
+
+        Assert.Equal("batch_mesh", root.GetProperty("mode").GetString());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("checkCode").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("reason").ValueKind);
+        Assert.False(root.GetProperty("clean").GetBoolean());
+        Assert.True(root.GetProperty("persisted").GetBoolean());
+        Assert.Equal("00001E45", root.GetProperty("formId").GetString());
+
+        JsonElement written = root.GetProperty("written").EnumerateArray()
+            .Single(entry => entry.GetProperty("formId").GetString() == "01001EDC");
+        Assert.Equal("8d508bb6b6ccec53", written.GetProperty("verticesHash").GetString());
+    }
+
     /// The geometry offsets live inside the NVNM subrecord's own data, which starts after the subrecord's
     /// six-byte signature and length, so a tamper measured from the record header would rewrite the wrong bytes.
     private static int NvnmAt(byte[] payload)

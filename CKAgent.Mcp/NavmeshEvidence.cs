@@ -13,11 +13,11 @@ public sealed record NavmeshEvidenceRecord(
     string Mode,
     string Cell,
     string FormId,
-    string CheckCode,
+    string? CheckCode,
     bool Clean,
     bool Silent,
     bool Corroborated,
-    string Reason,
+    string? Reason,
     string? SaveCode,
     bool Persisted,
     string? File,
@@ -40,7 +40,7 @@ public static class NavmeshEvidence
     /// Writes the record under <c>&lt;state&gt;/navmesh</c> and answers its path. A second run in the same second gets its
     /// own file rather than overwriting the first, so the evidence for two applies is two records.
     public static string Write(EditorPaths paths, string mode, string cellName, uint cellFormId,
-                               NavmeshCheckEvidence check, NavmeshPersistence? persistence, string? prunedJson,
+                               NavmeshCheckEvidence? check, NavmeshPersistence? persistence, string? prunedJson,
                                string message)
     {
         string directory = Path.Combine(paths.StateDirectory, "navmesh");
@@ -57,7 +57,7 @@ public static class NavmeshEvidence
         return path;
     }
 
-    public static string Json(string mode, string cellName, uint cellFormId, NavmeshCheckEvidence check,
+    public static string Json(string mode, string cellName, uint cellFormId, NavmeshCheckEvidence? check,
                               NavmeshPersistence? persistence, string? prunedJson, string message, DateTime captured)
     {
         var editor = new List<NavmeshEvidenceGeometry>();
@@ -82,11 +82,11 @@ public static class NavmeshEvidence
             Mode: mode,
             Cell: cellName,
             FormId: cellFormId.ToString("X8"),
-            CheckCode: check.Code,
-            Clean: check.Clean,
-            Silent: check.Silent,
-            Corroborated: check.Corroborated,
-            Reason: check.Reason,
+            CheckCode: check?.Code,
+            Clean: check?.Clean ?? false,
+            Silent: check?.Silent ?? false,
+            Corroborated: check?.Corroborated ?? false,
+            Reason: check?.Reason,
             SaveCode: persistence?.Code,
             Persisted: persistence?.Persisted ?? false,
             File: persistence?.PluginPath,

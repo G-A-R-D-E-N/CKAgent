@@ -533,6 +533,16 @@ if ($toolText) {
         }
     }
 
+    # Regression: a cover pass and a plugin-wide sweep both reach disk, and both left their proof only in the answer,
+    # so a delivered cell from either had nothing on file to hand over.
+    foreach ($trail in @(
+        @('WriteEvidence\("cover"', 'a cover pass that reaches disk writes no evidence record, so its proof is only the answer'),
+        @('WriteEvidence\("batch_mesh"', 'a swept cell that reaches disk writes no evidence record, so its proof is only the answer'))) {
+        $observed['evidence:' + $trail[0]] = if ($toolText -match $trail[0]) { 'found' } else { 'missing' }
+
+        if ($toolText -notmatch $trail[0]) { $failures.Add($trail[1]) }
+    }
+
     # Regression: apply and check must classify one set of lines, or the same check reads clean in one call and
     # unknown in the other.
     $observed['applyUsesReport'] = if ($applyCase.Success -and $applyCase.Value -match 'ReportLines\(payload\)') { 'found' } else { 'missing' }
