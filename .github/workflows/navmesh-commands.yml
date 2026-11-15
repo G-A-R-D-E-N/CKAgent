@@ -1,0 +1,58 @@
+name: navmesh commands
+
+# The navmesh tools address the editor's menu by caption because the ids differ per build, and one of
+# them changes cell data. Both are source properties, so they can be gated without an editor; the live
+# behaviour is covered by tools/navmesh-probe.ps1, which needs the CK.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # The plugin cannot build here (CKPE is a full MSVC build of its own), but the server can, and it is
+  # the only compile check the new tool gets before it reaches the editor machine.
+  server:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: The MCP server builds with ck.navmesh registered
+        shell: pwsh
+        run: dotnet build CKAgent.Mcp/CKAgent.Mcp.csproj -c Release
+
+  commands:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Navmesh commands are menu-resolved and finalize needs confirmation
+        shell: pwsh
+        run: ./tools/navmesh-command.test.ps1 -Evidence navmesh-commands.json
+
+      - name: A hard-coded menu id is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentNavmesh.cpp -Raw) +
+            "`nconstexpr int kPinnedCheckNavMeshes = 40568;`n" |
+            Set-Content drift/AgentNavmesh.cpp
+          ./tools/navmesh-command.test.ps1 -Plugin drift/AgentNavmesh.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the navmesh gate accepted a hard-coded menu id' }
+          $global:LASTEXITCODE = 0
+
+      - name: An unconfirmed finalize is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentNavmesh.cpp -Raw) -replace 'if \(Lower\(args\) != "confirm"\)', 'if (false)' |
+            Set-Content drift/AgentNavmesh.cpp
+          ./tools/navmesh-command.test.ps1 -Plugin drift/AgentNavmesh.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the navmesh gate accepted a finalize with no confirmation' }
+          $global:LASTEXITCODE = 0

@@ -5,21 +5,15 @@ using System.Text;
 namespace Garden.CkAgent;
 
 /// Only the plugin reaches editor internals, so failures must return a code, not an exception.
-public sealed class PluginClient : IPluginCaller
+public sealed class PluginClient
 {
+    private const string PipeName = "ckagent";
     private const string HeloPrefix = "HELO ";
+    // Constraint: a blocked read must not outlive the caller's patience, so every call has a deadline.
+    private const int CallDeadlineMs = 15000;
 
     private readonly object _gate = new();
-    private readonly bool _allowLowPipe;
     private int _sequence;
-
-    public PluginClient(bool allowLowPipe = false)
-    {
-        _allowLowPipe = allowLowPipe;
-    }
-
-    /// Constraint: the reached pipe is recorded so a status can name the one that answered.
-    public string? ReachedPipe { get; private set; }
 
     public bool TryCall(string command, out string payload, out string code, out string message)
     {
@@ -40,18 +34,48 @@ public sealed class PluginClient : IPluginCaller
                     NewLine = "\n",
                 };
 
-                string? helo = reader.ReadLine();
-                if (helo == null || !helo.StartsWith(HeloPrefix, StringComparison.Ordinal))
+                int sequence = ++_sequence;
+
+                // Constraint: the handshake is answered from the editor thread too, so it shares the same deadline.
+                string? helo;
+                string? reply;
+                try
+                {
+                    var exchange = System.Threading.Tasks.Task.Run(() =>
+                    {
+                        string? greeting = reader.ReadLine();
+                        if (greeting == null || !greeting.StartsWith(HeloPrefix, StringComparison.Ordinal))
+                            return (Greeting: (string?)null, Reply: (string?)null);
+
+                        writer.WriteLine($"CALL {sequence} {command}");
+                        return (Greeting: (string?)greeting, Reply: reader.ReadLine());
+                    });
+
+                    if (!exchange.Wait(CallDeadlineMs))
+                    {
+                        code = "plugin_busy";
+                        message = $"the editor did not answer '{command}' within {CallDeadlineMs / 1000}s; it is " +
+                                  "still working, so retry when it is idle";
+                        return false;
+                    }
+
+                    helo = exchange.Result.Greeting;
+                    reply = exchange.Result.Reply;
+                }
+                catch (AggregateException aggregate) when (aggregate.InnerException is IOException)
+                {
+                    code = "plugin_io";
+                    message = aggregate.InnerException.Message;
+                    return false;
+                }
+
+                if (helo == null)
                 {
                     code = "plugin_not_ready";
                     message = "the CKAgent plugin did not announce itself on the pipe";
                     return false;
                 }
 
-                int sequence = ++_sequence;
-                writer.WriteLine($"CALL {sequence} {command}");
-
-                string? reply = reader.ReadLine();
                 if (reply == null)
                 {
                     code = "plugin_closed";
@@ -82,13 +106,8 @@ public sealed class PluginClient : IPluginCaller
             catch (TimeoutException)
             {
                 code = "CKPEUnavailable";
-                message = $"no CKAgent plugin is listening on {PluginPipes.Describe(_allowLowPipe)}; install and " +
-                          "enable CKPE with CKAgent.dll in <game>\\CKPEPlugins\\" +
-                          (_allowLowPipe
-                              ? "; this host opted in, so a running editor that answered neither did not open " +
-                                "the low-labelled pipe - check [transport] LowIntegrityPipe=1 in CKAgent.ini " +
-                                "before it started"
-                              : "; the low-labelled pipe needs --allow-low-pipe as well");
+                message = "no CKAgent plugin is listening on \\\\.\\pipe\\ckagent; install and enable CKPE with " +
+                          "CKAgent.dll in <game>\\CKPEPlugins\\";
                 return false;
             }
             catch (IOException exception)
@@ -100,7 +119,7 @@ public sealed class PluginClient : IPluginCaller
             catch (UnauthorizedAccessException exception)
             {
                 code = "pipe_denied";
-                message = DeniedMessage(exception, WindowsIntegrity.LevelName(), _allowLowPipe);
+                message = $"the pipe refused the connection: {exception.Message} (0x{exception.HResult:X8})";
                 return false;
             }
             catch (Exception exception)
@@ -112,51 +131,23 @@ public sealed class PluginClient : IPluginCaller
         }
     }
 
-    // Constraint: the refused message must name the integrity level, because that decides which side to fix.
-    internal static string DeniedMessage(Exception exception, string? level, bool allowLow)
-    {
-        string text = $"the pipe refused the connection: {exception.Message} (0x{exception.HResult:X8})";
-
-        if (level == null)
-            return text + "; compare the account, the session and the integrity level of the editor process";
-
-        // Constraint: a low client only reaches the pipe the plugin labelled low, and only when it opted in to try it.
-        if (level == "low" && !allowLow)
-            return text + "; this client runs at low integrity and the default pipe carries a medium label, so " +
-                "the refusal is by design - set [transport] LowIntegrityPipe=1 in CKAgent.ini beside CKAgent.dll, " +
-                "restart the editor, and pass --allow-low-pipe, or run 'dotnet ckagent.dll' which needs neither";
-
-        if (level == "low")
-            return text + $"; this client opted in to the low-labelled pipe and {PluginPipes.Describe(true)} both " +
-                "refused, so the loaded plugin did not open it - check that CKAgent.ini had [transport] " +
-                "LowIntegrityPipe=1 when the editor started - or the pipe belongs to another user";
-
-        return text + $"; this client runs at {level} integrity, so the pipe belongs to another user or to a " +
-            "higher-integrity process - compare the account and session running the editor";
-    }
-
     // Constraint: the plugin rebuilds its pipe after every client, so a connect must retry before it fails.
-    private NamedPipeClientStream ConnectWithRetry()
+    private static NamedPipeClientStream ConnectWithRetry()
     {
         Exception? last = null;
-
-        foreach (string name in PluginPipes.Candidates(_allowLowPipe))
+        for (int attempt = 0; attempt < 3; attempt++)
         {
-            for (int attempt = 0; attempt < 3; attempt++)
+            var candidate = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.None);
+            try
             {
-                var candidate = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.None);
-                try
-                {
-                    candidate.Connect(3000);
-                    ReachedPipe = name;
-                    return candidate;
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or TimeoutException)
-                {
-                    last = exception;
-                    candidate.Dispose();
-                    Thread.Sleep(200);
-                }
+                candidate.Connect(3000);
+                return candidate;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or TimeoutException)
+            {
+                last = exception;
+                candidate.Dispose();
+                Thread.Sleep(200);
             }
         }
 

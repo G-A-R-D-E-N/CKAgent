@@ -1,10 +1,25 @@
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using ModelContextProtocol.Server;
 
 namespace Garden.CkAgent;
+
+public sealed record EditorStatusResult(
+    string Status,
+    string Code,
+    string Message,
+    bool Running,
+    int? Pid,
+    string? MainWindowTitle,
+    long? MainWindowHandle,
+    string CreationKitPath,
+    string GameDirectory,
+    string? EditorVersion,
+    int ManifestCommands,
+    string? ManifestBuild,
+    string? ManifestCapturedUtc,
+    bool PluginPipeAvailable,
+    string StateDirectory);
 
 public sealed record CommandListResult(
     string Status,
@@ -53,94 +68,35 @@ public sealed class CkTools
 
     [McpServerTool(Name = "ck.status"),
      Description("Report the installed Creation Kit and the running editor: build, process, main window, " +
-                 "command manifest age, and whether the in-process CKAgent plugin is listening. When a dialog " +
-                 "is blocking the editor it reports the dialog title, the captions of its buttons, and the " +
-                 "caption the automatic dismissal will press, so a caller can see both what is available and " +
-                 "what will happen. A window that exists but is hidden is reported as editor_invisible, not as a " +
-                 "missing editor, and stateDirectoryNote names a state folder used after the default was refused. " +
-                 "The reply also states this client's own integrity level, elevation and enabled privileges, and " +
-                 "which evidence found the editor — its process, its frame window, or neither — because a host at " +
-                 "low integrity is handed no editor process at all. pluginPipe names the pipe the plugin answered " +
-                 "on, and lowIntegrityPipeAllowed says whether this host may try the low-labelled one at all.")]
+                 "command manifest age, and whether the in-process CKAgent plugin is listening.")]
     public EditorStatusResult Status()
     {
         var document = _commands.Load();
         var process = EditorDiscovery.FindEditor(_paths.CreationKitPath);
 
-        // Constraint: a host handed no editor process still has the frame window, which proves the editor is up.
-        IntPtr frameOnly = EditorDiscovery.FindFrameWindow(out uint framePid);
-        int frameOnlyPid = (int)framePid;
-        var view = ClientView.Describe(process != null, frameOnly != IntPtr.Zero);
-        string? probedPipe = EditorDiscovery.ProbePipe(_paths.LowIntegrityPipeAllowed);
-
-        if (process == null && frameOnly == IntPtr.Zero)
+        if (process == null)
         {
             return new EditorStatusResult("ok", "editor_not_running",
-                "no CreationKit.exe for this install is running, and no frame window was found",
-                false, null, null, null,
+                "no CreationKit.exe for this install is running", false, null, null, null,
                 _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
                 document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-                probedPipe != null, _paths.StateDirectory, null, null, null, _paths.StateDirectoryNote,
-                view.Integrity, view.Elevated, view.Privileges, view.SeesProcess, view.SeesWindow, view.Sight,
-                probedPipe, _paths.LowIntegrityPipeAllowed);
+                false, _paths.StateDirectory);
         }
 
-        IntPtr window = process != null
-            ? EditorDiscovery.FindMainWindow((uint)process.Id)
-            : frameOnly;
-        int? pid = process?.Id ?? frameOnlyPid;
-        bool pipe = probedPipe != null;
+        IntPtr window = EditorDiscovery.FindMainWindow((uint)process.Id);
+        bool pipe = EditorDiscovery.IsPluginPipeAvailable();
 
-        string? blockedBy = null;
-        IReadOnlyList<string>? modalButtons = null;
-        string? dismissBy = null;
-        if (pipe && _plugin.TryCall("status", out string pluginStatus, out _, out _))
-        {
-            try
-            {
-                using JsonDocument statusDocument = JsonDocument.Parse(pluginStatus);
-                JsonElement root = statusDocument.RootElement;
-                if (root.TryGetProperty("blockedBy", out JsonElement blocked) && blocked.ValueKind == JsonValueKind.String)
-                {
-                    blockedBy = blocked.GetString();
-                }
+        string code = window != IntPtr.Zero ? "ok" : "window_not_ready";
+        string message = window != IntPtr.Zero
+            ? "editor is running and its command menu is reachable"
+            : "editor is running but has not created its main window yet";
 
-                if (root.TryGetProperty("modalButtons", out JsonElement buttons) && buttons.ValueKind == JsonValueKind.Array)
-                {
-                    var captions = new List<string>();
-                    foreach (JsonElement caption in buttons.EnumerateArray())
-                    {
-                        captions.Add(caption.GetString() ?? string.Empty);
-                    }
-
-                    modalButtons = captions;
-                }
-
-                if (root.TryGetProperty("dismissBy", out JsonElement dismiss) && dismiss.ValueKind == JsonValueKind.String)
-                {
-                    dismissBy = dismiss.GetString();
-                }
-            }
-            catch (JsonException)
-            {
-                blockedBy = null;
-                modalButtons = null;
-                dismissBy = null;
-            }
-        }
-
-        bool visible = window != IntPtr.Zero && Win32.IsWindowVisible(window);
-        (string code, string message) =
-            EditorDiscovery.DescribeStatus(process != null, window != IntPtr.Zero, visible);
-
-        return new EditorStatusResult("ok", code, message, true, pid,
+        return new EditorStatusResult("ok", code, message, true, process.Id,
             window != IntPtr.Zero ? Win32.WindowText(window) : null,
             window != IntPtr.Zero ? window.ToInt64() : null,
             _paths.CreationKitPath, _paths.GameDirectory, _paths.EditorVersion,
             document?.Commands.Count ?? 0, document?.Build, document?.CapturedUtc,
-            pipe, _paths.StateDirectory, blockedBy, modalButtons, dismissBy, _paths.StateDirectoryNote,
-            view.Integrity, view.Elevated, view.Privileges, view.SeesProcess, view.SeesWindow, view.Sight,
-            _plugin.ReachedPipe ?? probedPipe, _paths.LowIntegrityPipeAllowed);
+            pipe, _paths.StateDirectory);
     }
 
     [McpServerTool(Name = "ck.commands"),
@@ -301,6 +257,225 @@ public sealed class CkTools
 }
 
 // Camera reads must go through the plugin: only it can read the live window object.
+public sealed record CameraResult(
+    string Status,
+    string Code,
+    string Message,
+    string? Payload);
+
+[McpServerToolType]
+public sealed class CameraTools
+{
+    private readonly PluginClient _plugin;
+
+    public CameraTools(PluginClient plugin) => _plugin = plugin;
+
+    [McpServerTool(Name = "ck.frame"),
+     Description("Load a cell and put the camera in front of an object, so a reference can be inspected " +
+                 "without navigating by hand. cell is an EditorID or display name (skipped when omitted, so " +
+                 "an already loaded cell is used); reference matches a reference EditorID, its base object " +
+                 "EditorID, or an 8-digit form id; distance defaults to 256 and yaw picks which side to " +
+                 "stand on. Returns the matched object, its position, the camera pose and whether the object " +
+                 "sits ahead along the view row. Needs a loaded cell and CKPE with CKAgent.dll installed.")]
+    public CameraResult Frame(string reference, string? cell = null, double? distance = null, double? yaw = null)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+        {
+            return new CameraResult("error", "invalid_argument",
+                "reference is required: a reference EditorID, a base object EditorID, or a form id", null);
+        }
+
+        if (!string.IsNullOrWhiteSpace(cell))
+        {
+            // Constraint: an already loaded cell would satisfy the wait for another one, so the handle must change.
+            string? before = CurrentCellHandle();
+
+            if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {cell.Trim()}", out string opened, out string openCode, out string openMessage))
+                return new CameraResult("error", openCode, openMessage, opened);
+
+            bool loaded = false;
+            for (int attempt = 0; attempt < 60 && !loaded; attempt++)
+            {
+                string? now = CurrentCellHandle();
+                loaded = now != null && now != before;
+                if (!loaded) Thread.Sleep(250);
+            }
+
+            if (!loaded)
+            {
+                return new CameraResult("error", "cell_not_loaded",
+                    $"the editor did not report a new cell for {cell} within 15 s", null);
+            }
+        }
+
+        // A yaw without a distance must still frame at the default standoff rather than at zero.
+        if (yaw != null && distance == null) distance = 256;
+
+        string command = $"frame {reference.Trim()}";
+        if (distance != null) command += " " + PluginClient.Format(distance.Value);
+        if (yaw != null) command += " " + PluginClient.Format(yaw.Value);
+
+        if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
+            return new CameraResult("error", code, message, null);
+
+        return new CameraResult("ok", "ok", command, payload);
+    }
+
+    [McpServerTool(Name = "ck.aim"),
+     Description("Rotate the camera until a named reference in the loaded cell is straight ahead, keeping " +
+                 "the camera where it stands so the object is seen from the view already chosen. reference " +
+                 "matches a reference EditorID, its base object EditorID, or an 8-digit form id; optional " +
+                 "distance backs the camera away to that standoff first. Reports the yaw and pitch it wrote " +
+                 "and the achieved aim, measured against the scene camera's own view row rather than the " +
+                 "matrix just written, so an object above or " +
+                 "below the camera is aimed at rather than reported as a miss. Needs a loaded cell " +
+                 "and CKPE with CKAgent.dll installed.")]
+    public CameraResult Aim(string reference, double? distance = null)
+    {
+        if (string.IsNullOrWhiteSpace(reference))
+        {
+            return new CameraResult("error", "invalid_argument",
+                "reference is required: a reference EditorID, a base object EditorID, or a form id", null);
+        }
+
+        string command = $"aim {reference.Trim()}";
+        if (distance != null) command += " " + PluginClient.Format(distance.Value);
+
+        if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
+            return new CameraResult("error", code, message, null);
+
+        return new CameraResult("ok", "ok", command, payload);
+    }
+
+    private string? CurrentCellHandle()
+    {
+        if (!_plugin.TryCall("cell", out string payload, out _, out _)) return null;
+
+        const string marker = "\"cell\":\"";
+        int at = payload.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0) return null;
+        at += marker.Length;
+        int end = payload.IndexOf('"', at);
+        return end < 0 ? null : payload.Substring(at, end - at);
+    }
+
+    [McpServerTool(Name = "ck.camera"),
+     Description("Drive the render window camera through the CKAgent plugin. mode=Get returns the " +
+                 "scene camera's position, rotation matrix and scale; mode=Set places it at x/y/z with " +
+                 "optional yaw/pitch (radians, +pitch tilts up); mode=Move steps by x/y/z in the camera's " +
+                 "own axes, so +y is its right and not world +Y; mode=Lookat aims at the world point " +
+                 "x/y/z, calling the editor's LookAt and then writing the pose it computes when that " +
+                 "does not verify, and reports which path aimed it as via plus the achieved aim; " +
+                 "mode=Orbit circles the world point x/y/z at the given distance and angle (radians, angle 0 " +
+                 "looks along +X), optionally tilted, sets the editor's own pivot to that point so its own " +
+                 "orbit and zoom continue from there, and reports the pivot it read back plus the radius " +
+                 "and aim it achieved. Every mode returns the resulting position " +
+                 "and matrix. Needs a loaded cell and reports camera_transform_unverified when the scene " +
+                 "camera has no usable transform yet. " +
+                 "Requires CKPE plus CKAgent.dll in <game>\\CKPEPlugins\\.")]
+    public CameraResult Camera(string mode = "get", double? x = null, double? y = null, double? z = null,
+                               double? yaw = null, double? pitch = null, double? distance = null)
+    {
+        string command;
+
+        switch (mode.Trim().ToLowerInvariant())
+        {
+            case "get":
+                command = "camera get";
+                break;
+
+            case "set":
+                if (x == null || y == null || z == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Set needs x, y and z", null);
+                }
+
+                if ((yaw == null) != (pitch == null))
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "yaw and pitch must be given together", null);
+                }
+
+                command = yaw != null
+                    ? $"camera set {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)} " +
+                      $"{PluginClient.Format(yaw.Value)} {PluginClient.Format(pitch.Value)}"
+                    : $"camera set {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)}";
+                break;
+
+            case "move":
+            {
+                if (x == null || y == null || z == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Move needs x, y and z: a step along the camera's own axes", null);
+                }
+
+                if (yaw != null || pitch != null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "yaw and pitch belong to mode=Set; mode=Move only takes a local step", null);
+                }
+
+                command = $"camera move {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)}";
+                break;
+            }
+
+            case "lookat":
+            {
+                if (x == null || y == null || z == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Lookat needs x, y and z: the world point to aim at", null);
+                }
+
+                if (yaw != null || pitch != null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "yaw and pitch belong to mode=Set; mode=Lookat derives the rotation from the target", null);
+                }
+
+                command = $"camera lookat {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)}";
+                break;
+            }
+
+            case "orbit":
+            {
+                if (x == null || y == null || z == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Orbit needs x, y and z: the world point to circle", null);
+                }
+
+                if (distance == null || !(distance > 0))
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Orbit needs a positive distance: the radius to keep", null);
+                }
+
+                if (yaw == null)
+                {
+                    return new CameraResult("error", "invalid_argument",
+                        "mode=Orbit needs yaw: the angle around the point, in radians", null);
+                }
+
+                command = $"orbit {PluginClient.Format(x.Value)} {PluginClient.Format(y.Value)} {PluginClient.Format(z.Value)} " +
+                          $"{PluginClient.Format(distance.Value)} {PluginClient.Format(yaw.Value)}" +
+                          (pitch != null ? $" {PluginClient.Format(pitch.Value)}" : string.Empty);
+                break;
+            }
+
+            default:
+                return new CameraResult("error", "invalid_argument", "mode must be get, set, move, lookat or orbit", null);
+        }
+
+        if (!BlockedEditor.TryCall(_plugin, command, out string payload, out string code, out string message))
+            return new CameraResult("error", code, message, null);
+
+        return new CameraResult("ok", "ok", command, payload);
+    }
+}
+
 public sealed record JobStatusResult(
     string Status,
     string Code,
@@ -330,11 +505,8 @@ public sealed class CellTools
 
     [McpServerTool(Name = "ck.cells"),
      Description("List the cells in the editor's Cell View as EditorID, FormID, name and row index, " +
-                 "optionally filtered by EditorID or display name. The Cell View shows one collection at " +
-                 "a time — Interiors, Recent Cells, or one worldspace — so an exterior worldspace is " +
-                 "listed only after its entry is selected: read the pane's first ComboBox with " +
-                 "method=ui.tree and set it with method=ui.select before listing or loading by name. " +
-                 "Needs a loaded master file and the CKAgent plugin installed.")]
+                 "optionally filtered by EditorID or display name. Needs a loaded master file and the " +
+                 "CKAgent plugin installed.")]
     public CellResult Cells(string? filter = null)
     {
         string command = string.IsNullOrWhiteSpace(filter) ? "ui.cells" : $"ui.cells {filter!.Trim()}";
@@ -346,14 +518,8 @@ public sealed class CellTools
 
     [McpServerTool(Name = "ck.cell_load"),
      Description("Open a cell in the render window by EditorID or display name, exactly as double-clicking " +
-                 "it in the Cell View does, and report the cell the render window actually holds after the " +
-                 "load, so a wrong-cell load is caught in the same reply: the opened EditorID and form id " +
-                 "accompany the matched row, and cell_not_loaded names the cell that stayed when the try did " +
-                 "nothing. Resolves against the collection the Cell View's combo has selected, so a cell in " +
-                 "an exterior worldspace needs that entry selected first (ck.cells explains how) and fails " +
-                 "as no_cell without it; exterior cells share the name Wilderness, so those are opened by " +
-                 "row with method=ui.notify after reading the list with method=ui.items. Refuses a name that " +
-                 "cannot travel in one protocol line.")]
+                 "it in the Cell View does, and report the item that was opened. Refuses a name that cannot " +
+                 "travel in one protocol line.")]
     public CellResult CellLoad(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -364,27 +530,10 @@ public sealed class CellTools
             return new CellResult("error", "invalid_argument",
                 "name must be a single line of at most 200 characters", null);
 
-        CellWatch.OpenCell? before = CellWatch.Read(_plugin);
-
         if (!BlockedEditor.TryCall(_plugin, $"ui.cellload {trimmed}", out string payload, out string code, out string message))
-            return new CellResult("error", code, message, payload);
+            return new CellResult("error", code, message, null);
 
-        string? matched = CellWatch.Matched(payload);
-        CellWatch.OpenCell? opened = CellWatch.WaitForChange(_plugin, before, trimmed, matched);
-
-        if (opened == null)
-        {
-            return new CellResult("error", "cell_not_loaded",
-                $"the Cell View accepted {trimmed}, but the render window still holds " +
-                $"{CellWatch.Describe(before)} after 15 s",
-                CellWatch.WithOpened(payload, trimmed, before));
-        }
-
-        string openedCell = CellWatch.Describe(opened);
-
-        // Invariant: a display-name row opens a cell whose EditorID differs, so the name is reported, not compared.
-        return new CellResult("ok", "ok", $"ui.cellload {trimmed} -> opened {openedCell}",
-            CellWatch.WithOpened(payload, trimmed, opened));
+        return new CellResult("ok", "ok", $"ui.cellload {trimmed}", payload);
     }
 
     [McpServerTool(Name = "ck.cell"),
@@ -413,7 +562,8 @@ public sealed class UiTools
     private static readonly string[] Methods =
     {
         "ui.frame", "ui.windows", "ui.tree", "ui.items", "ui.select", "ui.notify",
-        "ui.command", "ui.menu", "ui.click", "ui.modals", "ui.cells", "ui.cellload", "ui.cellclose", "ui.dataload",
+        "ui.command", "ui.menu", "ui.click", "ui.type", "ui.modals", "ui.cells", "ui.cellload", "ui.dataload",
+        "uia.answer", "uia.save",
     };
 
     private readonly PluginClient _plugin;
@@ -446,119 +596,6 @@ public sealed class UiTools
 
         return new UiResult("ok", "ok", command, payload);
     }
-
-    [McpServerTool(Name = "ck.dismiss"),
-     Description("Clear the dialog blocking the editor on request, for when a caller sees the block before " +
-                 "anything has failed: it takes the dialog ui.modals flags as blocking, or the hwnd given, " +
-                 "presses the same caption the automatic dismissal uses, and reports that caption and whether " +
-                 "the block is gone. Nothing blocking is reported as nothing_blocked, not as an error.")]
-    public UiResult Dismiss(string? hwnd = null)
-    {
-        string target = (hwnd ?? string.Empty).Trim();
-        string title = string.Empty;
-        bool blocking = target.Length == 0;
-
-        if (!_plugin.TryCall("ui.modals", out string modals, out string modalsCode, out string modalsMessage))
-            return new UiResult("error", modalsCode, modalsMessage, null);
-
-        // Constraint: the modal list names the target and its title, so an explicit hwnd is reported the same way.
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(modals);
-            foreach (JsonElement modal in document.RootElement.EnumerateArray())
-            {
-                string handle = modal.TryGetProperty("hwnd", out JsonElement hwndText) ? hwndText.GetString() ?? string.Empty : string.Empty;
-                bool isBlocking = modal.TryGetProperty("blocking", out JsonElement flag) && flag.ValueKind == JsonValueKind.True;
-                bool wanted = blocking ? isBlocking : string.Equals(handle, target, StringComparison.OrdinalIgnoreCase);
-                if (!wanted)
-                    continue;
-
-                target = handle;
-                title = modal.TryGetProperty("title", out JsonElement named) ? named.GetString() ?? string.Empty : string.Empty;
-                break;
-            }
-        }
-        catch (JsonException)
-        {
-            return new UiResult("error", "bad_payload", "ui.modals did not return JSON", null);
-        }
-
-        if (target.Length == 0)
-            return new UiResult("ok", "nothing_blocked", "no dialog is blocking the editor", null);
-
-
-        if (!_plugin.TryCall($"ui.dismiss {target}", out string dismissed, out string code, out string message))
-            return new UiResult("error", code, message, null);
-
-        // Constraint: the press is only reported as a dismissal once the dialog is gone, not when the click was posted.
-        bool cleared = false;
-        string blockedBy = string.Empty;
-        for (int attempt = 0; attempt < 12; ++attempt)
-        {
-            if (!_plugin.TryCall("status", out string status, out _, out _))
-                break;
-
-            blockedBy = StatusString(status, "blockedBy");
-            if (blockedBy.Length == 0 && ModalGone(target))
-            {
-                cleared = true;
-                break;
-            }
-
-            Thread.Sleep(120);
-        }
-
-        JsonObject report = JsonNode.Parse(dismissed) as JsonObject ?? new JsonObject();
-        report["title"] = title;
-        report["cleared"] = cleared;
-        report["blockedBy"] = blockedBy;
-        string pressed = report["by"] is JsonNode chosen ? chosen.ToString() : string.Empty;
-
-        return cleared
-            ? new UiResult("ok", "dismissed", $"dismissed '{title}' with {pressed}", report.ToJsonString())
-            : new UiResult("ok", "still_blocked", $"pressed {pressed} but the editor is still blocked by '{blockedBy}'",
-                report.ToJsonString());
-    }
-
-    /// Constraint: a dialog on screen names no block, so the handle leaving the modal list is the only proof it went.
-    private bool ModalGone(string hwnd)
-    {
-        if (!_plugin.TryCall("ui.modals", out string modals, out _, out _))
-            return false;
-
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(modals);
-            foreach (JsonElement modal in document.RootElement.EnumerateArray())
-            {
-                if (modal.TryGetProperty("hwnd", out JsonElement handle) && handle.ValueKind == JsonValueKind.String &&
-                    string.Equals(handle.GetString(), hwnd, StringComparison.OrdinalIgnoreCase))
-                    return false;
-            }
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
-
-        return true;
-    }
-
-    private static string StatusString(string json, string name)
-    {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(json);
-            if (document.RootElement.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String)
-                return value.GetString() ?? string.Empty;
-        }
-        catch (JsonException)
-        {
-            return string.Empty;
-        }
-
-        return string.Empty;
-    }
 }
 
 // Anchors can go stale after a cell load, so the refresh must be askable, not only automatic.
@@ -579,113 +616,5 @@ public sealed class ResolveTools
             return new ResolveResult("error", code, message, null);
 
         return new ResolveResult("ok", "ok", "resolve", payload);
-    }
-}
-
-// Constraint: only the render window's own cell settles a load, because the Cell View only names its click.
-internal static class CellWatch
-{
-    internal sealed record OpenCell(string? Handle, string? EditorId, string? FormId, bool Readable);
-
-    internal static OpenCell? Read(IPluginCaller plugin)
-    {
-        if (!BlockedEditor.TryCall(plugin, "cell", out string payload, out _, out _)) return null;
-
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(payload);
-            JsonElement root = document.RootElement;
-
-            bool readable = root.ValueKind == JsonValueKind.Object &&
-                root.TryGetProperty("readable", out JsonElement flag) && flag.ValueKind == JsonValueKind.True;
-
-            return new OpenCell(Text(root, "cell"), Text(root, "editorId"), Text(root, "formId"), readable);
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
-
-    // Invariant: the wait ends when the requested cell is held or another one replaced it, never on time alone.
-    internal static OpenCell? WaitForChange(IPluginCaller plugin, OpenCell? before, string requested, string? matched,
-                                            int attempts = 60, int pauseMs = 250)
-    {
-        for (int attempt = 0; attempt < attempts; attempt++)
-        {
-            OpenCell? now = Read(plugin);
-            if (now != null)
-            {
-                bool replaced = now.Handle != null && now.Handle != before?.Handle;
-                if (replaced || Matches(now, requested, matched)) return now;
-            }
-
-            Thread.Sleep(pauseMs);
-        }
-
-        return null;
-    }
-
-    // Invariant: a name that already matches the loaded cell must not be loaded again, so the wait is never entered.
-    internal static bool IsOpen(OpenCell? cell, string requested)
-    {
-        return cell?.EditorId is string id && string.Equals(id.Trim(), requested.Trim(), StringComparison.OrdinalIgnoreCase);
-    }
-
-    internal static bool Matches(OpenCell cell, string requested, string? matched)
-    {
-        return cell.EditorId is string id &&
-            (string.Equals(id, requested, StringComparison.OrdinalIgnoreCase) ||
-             (matched != null && string.Equals(id, matched, StringComparison.OrdinalIgnoreCase)));
-    }
-
-    internal static string? Matched(string payload)
-    {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(payload);
-            return Text(document.RootElement, "cell");
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-    }
-
-    internal static string Describe(OpenCell? cell)
-    {
-        if (cell == null) return "no readable cell";
-        if (cell.EditorId != null) return cell.EditorId;
-        if (cell.FormId != null) return cell.FormId;
-        return "an unreadable cell";
-    }
-
-    internal static string WithOpened(string payload, string? requested, OpenCell? opened)
-    {
-        JsonObject node = new();
-        if (!string.IsNullOrWhiteSpace(payload) && JsonNode.Parse(payload) is JsonObject parsed) node = parsed;
-
-        if (requested != null) node["requested"] = requested;
-        if (opened != null)
-        {
-            node["opened"] = new JsonObject
-            {
-                ["editorId"] = opened.EditorId,
-                ["formId"] = opened.FormId,
-                ["cell"] = opened.Handle,
-                ["readable"] = opened.Readable,
-            };
-        }
-
-        return node.ToJsonString();
-    }
-
-    private static string? Text(JsonElement root, string name)
-    {
-        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(name, out JsonElement value)) return null;
-        if (value.ValueKind != JsonValueKind.String) return null;
-
-        string? text = value.GetString();
-        return string.IsNullOrEmpty(text) ? null : text;
     }
 }

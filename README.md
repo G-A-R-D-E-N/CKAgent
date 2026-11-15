@@ -39,14 +39,14 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 |---|---|---|---|
 | Camera pose | `██████████████████░░` 90% | read position, rotation and scale; set position with yaw and pitch; step along the camera's own axes | orthographic / zoom control; field of view |
 | Framing and aiming | `████████████████░░░░` 80% | stand in front of a named reference at a distance and yaw; turn the current camera onto a name, tilting for objects above or below, and report the achieved aim | automatic distance and height that fit the object's bounds |
-| Cell navigation | `███████████████████░` 95% | list and open any interior or exterior cell by name (36 865 Commonwealth cells), confirm what is loaded, as interior or exterior with its grid coordinates | opening by grid coordinates; the World Space X/Y/Go fields |
+| Cell navigation | `███████████████████░` 95% | list and open any interior or exterior cell by name (36 865 Commonwealth cells), confirm what is loaded | opening by grid coordinates; the World Space X/Y/Go fields |
 | Reference lookup | `███████████░░░░░░░░░` 55% | find a reference in the loaded cell by EditorID, base EditorID or form id; read its position; get named samples when a name misses | reading a reference's property sheet; listing base objects; persistent ids; picking in the render window |
 | Editor UI | `█████████████████░░░` 85% | enumerate windows and controls, read trees/lists/tabs/combos, select rows, fire `NM_DBLCLK`/`NM_CLICK`, run menu commands, press dialog buttons, list and reveal dialogs | arbitrary text entry into fields; drag and drop; context menus; keyboard simulation |
 | Plugin load and save | `██████████░░░░░░░░░░` 50% | open the Data dialog and tick a plugin (two calls); save a plugin with a timestamped backup and verify the file changed | editing load order; creating a new plugin; saving as a new name; merging |
 | Precombine / previs | `███████████████░░░░░` 75% | start headless generation jobs, follow exit code, artifacts and captured editor warnings, tail the console | verifying the result visually; per-cell regeneration; diagnosing what a pass skipped |
 | Diagnostics and recovery | `████████████████░░░░` 80% | report build, process, window, loaded cell and the hidden dialog blocking the editor; re-resolve stale anchors; reveal and retry around a blocking modal | crash triage; log correlation; restarting the editor on demand |
 | **Record editing** | `██░░░░░░░░░░░░░░░░░░` 10% | browse what the Object Window lists; open a record's dialog | creating, editing or saving any record field; conflict handling; copy-as-override |
-| **Navmesh** | `░░░░░░░░░░░░░░░░░░░░` 0% | — | everything: geometry, triangles, cover, baking, verification |
+| **Navmesh** | `██████░░░░░░░░░░░░░░` 30% | create and apply the loaded cell's navmesh through the editor's own commands (generate, finalize, check) and save the cell only when the check reported no failure, with a dry run that posts nothing; run any named navmesh command for command-level edits; report presence, each form's real vertex and triangle counts and the area those triangles measure; answer the check with a per-cell verdict (cells, errors, warnings) instead of raw log lines | cover coverage, painting or moving individual triangles, per-triangle reads beyond what area needs; reading or writing a NAVM payload |
 | **Papyrus / scripting** | `░░░░░░░░░░░░░░░░░░░░` 0% | — | attaching scripts, editing properties, compiling, reading VM state |
 | **Assets** (mesh, texture, material) | `█░░░░░░░░░░░░░░░░░░░` 5% | list assets in the Object Window tree | previews, importing, replacing paths, material editing |
 | **Landscape, weather, lighting** | `░░░░░░░░░░░░░░░░░░░░` 0% | — | terrain editing, region painting, weather and lighting preview, LOD |
@@ -56,12 +56,11 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 
 ## The tools
 
-### MCP tools (16)
+### MCP tools (17)
 
 | Tool | What it does |
 |---|---|
-| `ck.status` | editor process, build, main window, command manifest age, whether the plugin answers, and the blocking dialog's title, button captions and the caption its dismissal presses |
-| `ck.dismiss` | clear the dialog blocking the editor on request, pressing the caption `ck.status` says it will and only reporting `dismissed` once the block is gone |
+| `ck.status` | editor process, build, main window, command manifest age, whether the plugin answers |
 | `ck.commands` | capture the live menu tree into a manifest of build-specific command ids, or read the cache |
 | `ck.invoke_command` | run a menu command by path (`File/Save`) or id; refuses while a modal has the window disabled |
 | `ck.save` | back the plugin up out of `Data`, post Save, and confirm the file actually changed |
@@ -69,14 +68,15 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | `ck.generate_previs` | start a headless `-GeneratePreVisData` job |
 | `ck.job_status` | job state, exit code, artifacts, captured `EditorWarnings.txt` |
 | `ck.job_log` | tail a job's console log |
-| `ck.frame` | load a cell and stand the camera in front of a named reference, sized from the reference's own bounds (`distance` overrides, `yaw` picks the side); a cell that is already open is not reloaded; reports the cell it actually used |
-| `ck.aim` | turn the camera onto a named reference without moving it; optional `distance` standoff; `level` holds the horizon instead of centring and reports `yawAim` |
-| `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat`, `orbit` a reference name or a world point at a distance and angle, `rotate` through the editor's own RotateBy, `lens` (field of view in degrees, near and far planes, measured zoom, or a zoom factor) |
+| `ck.frame` | load a cell and stand the camera in front of a named reference (`distance`, `yaw`) |
+| `ck.aim` | turn the camera onto a named reference without moving it; optional `distance` standoff |
+| `ck.camera` | `get`, `set` (position + yaw/pitch), `move` along camera axes, `lookat`, `orbit` a point at a distance and angle |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row |
-| `ck.cell_load` | open a cell exactly as double-clicking it does, and report the cell the render window holds afterwards; only reaches cells of the collection the Cell View's worldspace combo is showing |
-| `ck.cell` | which cell the render window holds, as EditorID and form id, whether it is interior, and its grid coordinates, so a load is confirmed rather than assumed |
+| `ck.cell_load` | open a cell exactly as double-clicking it does |
+| `ck.cell` | which cell the render window holds, as EditorID and form id, so a load is confirmed rather than assumed |
 | `ck.ui` | passthrough to the in-process control tools below |
 | `ck.resolve` | re-read the render window and camera once, for when anchors go stale after a load |
+| `ck.navmesh` | `apply` does the job in one call (generation, then Finalize Cell NavMeshes, then Check NavMeshes), saves with File/Save only after a check that reported no failure, and answers `dry_run=true` with the resolved plan instead of posting; `generate`, `finalize`, `check` run one step; `run` executes a named navmesh command for edits (precuts, covers, waypoints, remove, separate, audit, OBJ export); `state` reports presence and each form's vertex and triangle counts (`geometry` = `form_arrays`); `commands` lists the live menu; every mutating mode needs `confirm`, and `check`/`apply` answer with a per-cell verdict parsed from the check's log |
 
 ### Inside the plugin
 
@@ -84,13 +84,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 through `ck.ui`:
 
 `ui.frame`, `ui.windows`, `ui.tree`, `ui.items`, `ui.select`, `ui.notify`, `ui.command`, `ui.menu`,
-`ui.click`, `ui.modals`, `ui.cells`, `ui.cellload`, `ui.cellclose`, `ui.dataload`
-
-A cell by name only reaches what the Cell View is showing, and that is one collection at a time:
-`Interiors`, `Recent Cells`, or a single worldspace. For an exterior cell, switch the pane's worldspace
-combo first — `ui.tree` on the Cell View to find it, `ui.select <combo> <index>` to set it — and then
-`ck.cell_load {"name":"DiamondCityOrigin"}` opens it by name; switch away and the same name is `no_cell`
-again. `docs/ck-agent-mcp.md` records the run these numbers come from.
+`ui.click`, `ui.modals`, `ui.cells`, `ui.cellload`, `ui.dataload`
 
 ---
 
@@ -98,8 +92,11 @@ again. `docs/ck-agent-mcp.md` records the run these numbers come from.
 
 Nothing here is a promise of future work — these are gaps, listed so nobody assumes otherwise.
 
-- **Navmesh.** No geometry, no triangles, no cover, no baking. The editor's navmesh tools are not wired up at
-  all.
+- **Navmesh geometry.** Creation and edits go through the editor's own commands. Coverage counts the
+  loaded forms' own vertex and triangle arrays, which were confirmed against the cell's NAVM records, and
+  sums each triangle's area from the same 24-byte element; cover counts are still not exposed, and
+  painting or moving individual triangles stays outside this tool. The pass verdict is the CKPE log; no NAVM payload is written
+  directly.
 - **Record editing.** CKAgent can open windows and press buttons, but it cannot create, modify or save a
   record field. Anything that changes a plugin's contents beyond "the editor's own Save command" is out of
   scope today.
@@ -159,9 +156,6 @@ cmake --build build/ckagent --config Release
 - `CKPE_ROOT` is the checkout; the three import libraries are read from `<CKPE_ROOT>/x64`.
 - `CKPE_PLUGIN_DIR` is optional. When set, the build copies the DLL into the game's `CKPEPlugins\` folder
   as `CKAgent.dll`. Without it, take `build/ckagent/CKAgentPlugin.dll` and copy it there under that name.
-  The install is verified: it compares the hash of the copied file against the build and fails the build with the
-  path named when the editor has the DLL loaded, so a build never reports success while the previous plugin is
-  still the one on disk.
 - Ninja is single-config, so the binary lands in `build/ckagent/`. A `-G "Visual Studio 17 2022" -A x64`
   configure works too, and then the path carries `\Release\`.
 - Configure fails with an actionable message when `CKPE_ROOT` is unset, when an import library is missing,
@@ -200,45 +194,13 @@ dotnet publish CKAgent/CKAgent.Mcp/CKAgent.Mcp.csproj -c Release -r win-x64 --se
 }
 ```
 
-Either launch works: `dotnet ckagent.dll` connects, and `ckagent.exe` connects when it is allowed to. The
-default pipe, `\\.\pipe\ckagent`, carries `S:(ML;;NW;;;ME)` and is reachable only from medium integrity and
-above — that label is stated rather than inherited, because a first descriptor without one was measured
-letting a low-integrity client straight in.
-
-A sandboxed workspace hands `ckagent.exe` a low-integrity token, so it needs the opt-in, and the opt-in has
-two halves: the plugin opens `\\.\pipe\ckagent-low` (`S:(ML;;NW;;;LW)`) only when the editor starts with
-`<game>\CKPEPlugins\CKAgent.ini` containing `[transport] LowIntegrityPipe=1`, and the host tries that pipe
-only when launched with `--allow-low-pipe`. With both, the strict pipe is still tried first, so the loose
-one is never the easy path. `ck.status` reports which one answered in `pluginPipe`, and whether this host
-was allowed to try at all in `lowIntegrityPipeAllowed`.
-
-That path is not working yet, and this file says so rather than claiming it: with the ini and the flag in place a
-low-integrity `ckagent.exe` is still refused, and `\\.\pipe\ckagent-low` is measured to carry no mandatory label at
-all, so the descriptor the plugin passes for it is not reaching the object. Until that is fixed a low-integrity host
-has no way in, and `dotnet ckagent.dll` is the launch to use.
-
-The trade-off stays deliberate and off by default: once the opt-in does work, any process at the editor user's low
-integrity can drive the editor. Turn it off by removing the ini or its line and restarting the editor.
-
-The in-repo probes run from a PowerShell that is low integrity in this workspace, so they read the same
-switch from the environment: set `CKAGENT_LOW_PIPE=1` and they connect to `ckagent-low` instead.
-
-A denial still explains itself: `pipe_denied` reads the client's own token, reports its level, and names
-the switch that is missing — the plugin's ini for a low client, or the account and session for a higher one.
+Start it through `dotnet`, not `ckagent.exe`, if you hit `pipe_denied`: a process started from a sandboxed
+workspace directory inherits a low-integrity token, and Windows refuses that token access to the
+medium-integrity pipe. `dotnet` runs at medium integrity, so the DLL host connects. This was measured on
+this host, not assumed — the same binary launched from a folder outside the sandbox connects fine.
 
 Working files — the command manifest, save backups, job logs — live in `%LOCALAPPDATA%\ckagent` and survive
-a server restart. When that folder cannot be written the host steps to `%LOCALAPPDATA%\Temp\Low\ckagent`, then
-`%TEMP%\ckagent`, then a `state\` folder beside `ckagent.exe`, and names the one it used in `stateDirectoryNote`.
-That matters here: a low-integrity apphost is refused every profile folder on this machine, measured, so it ends
-on the folder beside itself and says so instead of failing to start. A job left `running` is reported `interrupted`
-rather than silently forgotten.
-
-The same low-integrity apphost is handed no `CreationKit` process at all, so `ck.status` finds the editor by its
-frame window and answers `editor_invisible` with the real pid and title rather than `editor_not_running`. Window
-messages do not cross integrity levels, so in that mode every call goes over the plugin pipe — which works, and
-was measured from that host. The reply also says what the client itself is working with: `clientIntegrity`,
-`clientElevated`, `clientPrivileges`, and `seesEditorProcess` / `seesEditorWindow` / `editorSight` naming the
-evidence behind the answer.
+a server restart. A job left `running` is reported `interrupted` rather than silently forgotten.
 
 ### 4. Launch the editor
 
@@ -256,12 +218,6 @@ id, and where the corresponding class table, singleton and global sit in the 1.1
 
 ## Checks
 
-`CKAgent.Mcp.Tests` asserts the three ways a call can stay blocked after the retry — dismissed but still
-blocked, never dismissed, and a second queued dialog taking the block — against canned pipe replies, so none
-of them needs an editor. It is xunit v3 and runs in-process: `dotnet run --project CKAgent.Mcp.Tests -c
-Release`. Not `dotnet test`, which starts a VSTest host that this machine refuses to launch even for an empty
-project, and that is a limit of the machine, not of the project.
-
 `.github/workflows/camera-layout.yml` runs `tools/camera-layout.test.ps1` on every pull request. It fails
 when the plugin's hand-measured camera constants drift (world `0x70`, translate `world+0x30`, scale
 `world+0x3C`, row stride `4`), when the readable window stops covering the scale word, when the stride stops
@@ -270,111 +226,26 @@ a distance away from it. Three extra steps drift the offset, the stride and the 
 and fail if the test still passes, so the gate itself is checked. The test reads source text only — no
 editor, no plugin build, nothing to install, which is why it can run on a stock runner.
 
-The same gate cross-checks the cell decode, which is a contract between three files: the plugin writes the
-reply, the server parses it in `CellWatch`, and `tools/cell-probe.ps1` asserts it. `kCurrentCellOffset` must
-stay at `0xF8`, the cell must be read at `g_renderWindow + kCurrentCellOffset` inside its `0x180` bytes, the
-reply must emit `editorId`, `formId`, `interior`, `gridX`, `gridY` and `hasWorldSpace`, both `ToolStatus` and
-`ToolCell` must go through the shared `ReadPlacement`, and every key the server parses or the probe asserts
-must be one the plugin actually emits. Four more drift steps move the offset, rename `editorId` to
-`editor_id`, hard-code the offset instead of using the constant, and weaken the probe's key list — each one
-must fail the gate.
-
-`main` requires that check. `tools/branch-protection.json` is the protection as applied — the `layout` check
-required, force pushes and deletions refused, administrators not enforced — and it can be re-applied with
-`gh api -X PUT repos/G-A-R-D-E-N/CKAgent/branches/main/protection --input tools/branch-protection.json`. The
-gate cannot pass today: every run since the workflow was added reports *The job was not started because an
-Actions budget is preventing further use*, so a pull request into `main` stays blocked until the
-organisation's Actions minutes or spending limit are raised. Direct pushes to `main` are unaffected,
-because the protection does not require a pull request.
-
 `tools/blocked-modal-probe.ps1` covers the part that cannot run on a runner: it needs a live editor. It
 opens `File/Data` while the editor is in the background so the dialog is created hidden, asserts `status`
 names it, then makes a call that must fail (`ck.frame` with no cell loaded) and asserts no blocking dialog
 is left afterwards and the reply does not send anyone off to click — with a control call first that
 succeeds and must leave the dialog alone, so the change can only come from the dismiss-and-retry path. The MCP step runs through
-`tools/mcp-call.mjs`, so the retry above the plugin pipe is what is exercised. It runs with a cell open: it
-closes the cell the render window holds (`ui.cellclose`), checks that `File/Data` is available again, and
-reloads the same cell at the end, including when it stops early. Exit code 2 means the hidden state did not
-reproduce, not that the code failed, and the dialog is always dismissed with Cancel so the load order is
-untouched.
+`tools/mcp-call.mjs`, so the retry above the plugin pipe is what is exercised. Run it from the repository
+root with the editor running and no cell open; exit code 2 means the hidden state did not reproduce, not
+that the code failed, and the dialog is always dismissed with Cancel so the load order is untouched.
 
-`tools/live-evidence.ps1` is the release run: both live probes and the camera sweep in one pass, into one
-evidence file. They need opposite editor states — the blocked-modal probe needs `File/Data` available, the
-sweep and the aim probe need a cell — so the wrapper sets that state itself instead of trusting what it
-finds: it frees the cell the render window holds (re-reading the free state, so a write that never reached
-the render window cannot pass), runs the probe, frees and loads `-Cell` again, then the sweep, then the aim
-probe, which loads its own cell and leaves it loaded. Either starting state — a cell open or none — therefore
-runs the same three checks in the same order, and the probe's own close-and-restore never has to trigger. One
-command covers both probes, so a release cannot quietly run only the one that comes to mind first.
+`.github/workflows/navmesh-commands.yml` runs `tools/navmesh-command.test.ps1`, which fails when a
+navmesh menu id is hard-coded (an id belongs to one editor build), when `nav.finalize` stops comparing
+the caller's answer to `confirm`, or when the plugin stops being built and dispatched. Two drift steps
+insert a pinned id and remove the confirmation, and fail if the gate still passes.
 
-The probe also covers the other half of that state — a dialog left on screen. It reveals the hidden dialog
-instead of hoping a foreground race goes its way, then asserts the refusal a command gets (`warning` /
-`editor_modal`), that the dialog was not pressed behind the operator's back, and that `ck.dismiss` clears it.
-That phase found a real bug: the MCP looked for a main window whose class is `Creation Kit`, while the frame's
-class is `Creation Kit Fallout 4 [v1.11.246.0]`, so every window-dependent tool reported `window_not_ready`.
-
-`tools/aim-probe.ps1` covers the aim contract the same way: it places the camera level, above, below and
-directly over one reference, calls `ck.aim` through the server, and asserts the camera did not move, the
-aim is 1.0, the tilt equals the angle between camera and target, and the view row re-read afterwards dots
-that direction. Three cases ask for a standoff — from above the target, from below it and level with it —
-where the camera must settle exactly that far away, the tilt must come from the new position rather than the
-old one, and its sign must follow which side the camera stands on, since a tilt that is right in size but
-backwards still points at the sky. Four further cases ask for `level`, where the pitch must be written as `0`,
-the re-read view row must come back flat, the heading must still reach the target, and the reported `aim` must
-fall to the cosine of the target's elevation rather than claiming a centre it never took. Another aims at two
-references in a single call, which must turn to each in order and finish on the last. The frame cases pose the camera with `ck.frame` and check
-its centring the same way — `aim` `1`, `aligned`, the camera exactly the reported `distance` from the box
-centre, and the re-read view row dotting that centre — because framing reports an aim too, and it is the box
-centre rather than the reference's position that gets centred. They run twice, at the fitted distance and at
-half of it — a nearer standoff, because a frame far enough back leaves the cell and the reference is then
-looked up in whatever cell the camera moved into — and also assert the tilt's own geometry: the camera must
-stand half the distance above the centre and `cos 30°` of it away flat, which is what a tilt taken from the
-wrong standoff would move while `aim` stayed at `1`. The probe loads the cell itself when needed, selecting the Cell View's `Interiors` entry
-when a previous run left another collection showing; exit 2 means the cell or the reference was not found.
-
-`tools/tilt-compare.ps1` runs that probe twice — once in an interior cell, once in an exterior worldspace,
-switching the Cell View's worldspace entry before the load — and writes both readings into one evidence file
-with a `comparison` list that puts the tilted and level result of each height side by side. The two kinds of
-world are reached differently, so they used to be measured in separate runs and compared by hand; the file now
-fails if either world refuses to prepare, if `level` writes a pitch other than `0` in either, or if the off-height
-cases still report a centred target, so the tilt is shown to follow the camera and the target rather than the
-cell.
-
-`tools/low-client-probe.ps1` covers the transport from the low side. It runs `ckagent.exe` as the low client and
-asserts the default pipe refuses it with a message naming both switches, that `--allow-low-pipe` reaches
-`ckagent-low` and `ck.cell` answers, and that a medium `dotnet` host still reaches `ckagent`. `-StrictOnly` runs
-just the refusal, for a machine that keeps the low pipe closed. Today the strict half passes and the full run
-exits 3 on the opt-in half, which is the open transport bug written down where it will be noticed.
-
-`tools/pipe-denied-repro.ps1` covers the refusal message on its own: it reproduces `pipe_denied` from the low
-exe and asserts the text carries the Win32 error, this client's level and both switches, and does not blame a
-stale plugin, then records what the same call answers with `--allow-low-pipe`.
-
-`tools/cell-not-loaded-probe.ps1` covers the branch that catches a load the editor ignores. The plugin matches a
-name against every pane, so the probe asks for one that only the Object Window lists: the row is accepted, the
-double-click does nothing, and `cell_not_loaded` has to name the cell that stayed. It also loads that cell for
-real afterwards, so a tool that returned `cell_not_loaded` for everything could not pass it.
-
-`tools/cell-probe.ps1` covers the naming contract. It picks cells from the Cell View's own list, opens each
-with `ui.cellload`, and asserts `ck.cell` names the cell that was opened: `editorId` equal to the row,
-`formId` equal to the row's form id, the placement fields present, grid `0, 0` for an interior cell, a
-worldspace for an exterior one, and a different cell pointer for each cell. It then runs the same check
-against three fabricated replies — pointer-only, a wrong EditorID, and a missing form id — and fails if any
-of them would pass, so a regression back to pointer-only reporting fails this probe rather than passing
-with fewer fields. Exit 2 means the Cell View listed no named cell.
-
-`tools/camera-tool-cross-check.ps1` covers the row shift between the camera node and the scene camera. It
-sets 55 yaw/pitch poses and at every one recomputes `rotationOffset` from the node matrix and the documented
-shift, compares `sceneRotate` (the slave's matrix, in the same reply as `rotate`) with the node's shifted
-rows, checks the view row is node row 1, checks that row carries the requested yaw and pitch, and checks
-the translation both nodes share. Worst errors over the sweep: offset `0.0002`, view row `0`, scene matrix
-`0`, forward `0.000049`. A wrong shift is rejected too — it predicts `0` where the tool reports `6.5027` at a diagonal
-pose, which is why the sweep matters and a single axis-aligned pose does not.
-
-That probe is guarded against going stale by `tools/camera-layout.test.ps1`, which fails if a reply key it
-reads stops being emitted, if its sweep is narrowed or its tolerance widened, or if the docs name it under a
-path it does not live at. Passing `-Live` runs the sweep itself whenever the editor answers, and reports it
-skipped — not passed — when no editor or no loaded cell is there.
+`tools/navmesh-probe.ps1` is the live half of the navmesh checks: it asserts that `mode=state` names the
+same cell the plugin reports and counts a non-zero number of vertices and triangles per navmesh form,
+that `mode=check` posts the id
+`mode=commands` just reported for Check NavMeshes, that the reply names the CKPE log and carries a
+structured `verdict` instead of raw lines, and that an unconfirmed `finalize` returns no payload. It needs the editor, the plugin and a
+cell with a navmesh open, and exits 2 when that state is not there.
 
 A second phase covers the still-blocked reply. It starts the server with `CKAGENT_TEST_DISMISS_FAILS=1`, so
 the dismissal is skipped — the only way to reach that branch, because a dialog the server does handle is

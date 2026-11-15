@@ -61,6 +61,11 @@ command IDs**, including:
 | Generate Max Height Data For World | 40902 | Compact Active File Form IDs | 41551 |
 | Convert Active File to Light Master | 41549 | Create Archive | 40993 |
 
+Measured again in-process on 1.11.246.0 (`ui.menu` on the frame): 11 top-level entries — FILE, EDIT,
+VIEW, WORLD, NAVMESH, VISIBILITY, CHARACTER, GAMEPLAY, HELP, the CKPE entry and MCP — and no item named
+"Warnings" anywhere in the bar, so 41037 is not reachable on this install and `ui.command Warnings`
+answers `no_command`.
+
 So `PostMessage(hMain, WM_COMMAND, id, 0)` executes an editor command exactly as the user would,
 with the editor's own validation, undo recording and dialogs. That alone is a large usable tool
 surface, and the full ID table should be captured as a checked-in manifest rather than hard-coded
@@ -79,7 +84,7 @@ reference where you want it.
 | Cell View | `ViewerClass` | 2 × `SysListView32` (cells, refs) + 2 × `SysHeader32` |
 | Layers | `#32770` | `SysTreeView32` |
 | Material Palette | `#32770` | `SysListView32` |
-| Warnings | `#32770` | `SysListView32` |
+| Log Window | `RTEDITLOG` | `RICHEDIT50W` (its window text is the whole log) |
 | Render Window | `MonitorClass` | 4 × `Static` (the scene surface) |
 
 These are genuine common controls, not owner-drawn fakes, which means `LVM_*`/`TVM_*` messages apply.
@@ -257,117 +262,12 @@ and connects; so does `dotnet ckagent.dll`, whose host lives in `C:\Program File
 does not inspect clients, and signing is not the factor — a signed copy inside the workspace is refused
 the same way. Register the server with `command: dotnet`, `args: [<build>\ckagent.dll, --game, ...]`.
 
-There are two pipes, and only the strict one exists by default. `\\.\pipe\ckagent` is created with
-`D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)S:(ML;;NW;;;ME)`, and the explicit medium label is the part that does the
-work: a low-integrity client is refused — that is the default, and it is what a caller gets without asking for
-anything. The label has to be stated rather than inherited: a first pass left it off, and a low-integrity client
-connected to the editor's pipe anyway, because a descriptor with no mandatory label restricts nothing.
-`\\.\pipe\ckagent-low` is created with `S:(ML;;NW;;;LW)` added, and only when the editor was started with
-`<game>\CKPEPlugins\CKAgent.ini` holding `[transport] LowIntegrityPipe=1`. The client side needs its own opt-in
-on top: `--allow-low-pipe`. Both sides must agree, so neither the plugin nor a host can open the loose pipe alone.
-
-With the opt-in, the client tries `\\.\pipe\ckagent` first and `\\.\pipe\ckagent-low` second, so the loose pipe is
-never the easy path. `ck.status` reports what happened in `pluginPipe` — the name that answered, `ckagent` or
-`ckagent-low`, null when neither did — and `lowIntegrityPipeAllowed`, whether this host was even allowed to try.
-The order of the two entries in a `pipe_denied` message is the fix order: the plugin's ini first, the host's flag
-second.
-
-Measured, with the editor at medium integrity:
-
-| client | ini | flag | result |
-|---|---|---|---|
-| `dotnet ckagent.dll` | absent | absent | `pluginPipe: ckagent` |
-| `ckagent.exe` (low) | absent | absent | `pipe_denied`, message names both switches |
-| `ckagent.exe` (low) | present | present | still `pipe_denied` — see below |
-| `dotnet ckagent.dll` | present | absent | `pluginPipe: ckagent` (strict first) |
-
-The label was read off the live object rather than inferred: `\\.\pipe\ckagent` returns `label 0x2000 mask 0x1`,
-which is the medium label doing the work. `\\.\pipe\ckagent-low` returns **no SACL**, so whatever the plugin passes
-for it is not reaching the object — the same SDDL converts successfully when converted on its own, so the failure is
-in the second CreateNamedPipe path, not in the string. Until that is fixed the opt-in pipe exists (the plugin logs
-it) but does not admit the low host that needs it, and the docs do not claim otherwise; the strict default is
-unaffected, and `dotnet ckagent.dll` is the launch that works from this workspace.
-
-`tools/low-client-probe.ps1` keeps this covered. It runs `ckagent.exe` — the low client — through the protocol and
-asserts that the apphost really came up low, that the default pipe refuses it with `pipe_denied` naming both
-switches, that the refusal check rejects two fabricated replies (a plain `CKPEUnavailable` and a `pipe_denied`
-that names nothing), that `--allow-low-pipe` reaches `ckagent-low` and `ck.cell` answers, and that a medium
-`dotnet` host still reports `pluginPipe: ckagent`. `-StrictOnly` asserts only the refusal, which is the run that
-belongs on a machine that deliberately keeps the low pipe closed. Measured now: the strict half passes, and the
-full run exits 3 on the opt-in half because the loose pipe does not admit this client yet — the probe is red
-exactly where the feature is.
-
-`tools/pipe-denied-repro.ps1` is the narrower run: it reproduces the refusal from the low apphost and checks the
-message itself — code `pipe_denied`, the Win32 error `0x80070005`, this client's level, both switches, and that it
-does not blame a stale plugin — then records what the same call answers with `--allow-low-pipe`, because a diagnosis
-is only useful if it leads somewhere. Measured: passes. The recorded opt-in line was wrong on the first run, telling
-the reader to install a plugin that was running; it now says the editor answered neither pipe and to check the ini
-before it started.
-
-One trap found while measuring: CKPE loads every DLL in `CKPEPlugins`, so a backup copy left beside the plugin
-competes for the pipe name. The log showed the second module dying with `CreateNamedPipe failed (231)`
-(`ERROR_PIPE_BUSY`) while the first served, which makes any pipe result read as if the new build were loaded when
-it was not. Keep exactly one `CKAgent.dll` there.
-
-When a denial does happen, `pipe_denied` reads the client's own token and names its level, because that
-decides the cause: at low without the flag, the refusal is the default working as designed and the message names
-both switches; at low with the flag, it means the loaded plugin did not open the loose pipe — the ini was missing
-when the editor started — or the pipe belongs to another user; at medium it means the pipe belongs to another
-account or a higher-integrity process.
-
-### The state directory the apphost can actually write
-
-The host keeps `commands.json`, `jobs\` and `backups\` in a state directory, and at low integrity the folder it
-would like is one it cannot write, so it now walks a list instead of failing at startup. Without `--state` the
-order is `%LOCALAPPDATA%\ckagent`, then `%LOCALAPPDATA%\Temp\Low\ckagent` — the low-integrity temp Windows
-provides at logon — then `%TEMP%\ckagent`, then a `state\` folder beside `ckagent.exe`. A candidate is accepted
-only after a probe file has been written and deleted in it: a low-integrity process is refused a write into a
-medium-labelled folder even when that folder exists and can be read, so existence proves nothing.
-
-Measured on this host, with the apphost started from the workspace: `%LOCALAPPDATA%\ckagent`,
-`%LOCALAPPDATA%\Temp\Low\ckagent`, `%TEMP%\ckagent` (`C:\WINDOWS\TEMP`) and a folder in the Steam game
-directory are each refused with `UnauthorizedAccessException`, while the workspace itself carries
-`Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)` and takes the write, so the host settles on
-`CKAgent\CKAgent.Mcp\bin\Release\net8.0\state`. Before the fallback it exited with status 2 and
-`state directory C:\Users\...\ckagent is not writable`, which an MCP client sees as a server that will not start.
-
-The choice is reported twice — on stderr at startup and as `stateDirectoryNote` on every `ck.status` reply, whose
-`stateDirectory` names the folder in use. An explicit `--state` is the caller's decision, so it is used or refused
-and never replaced; only the default list falls back.
-
-### An invisible editor is not a missing one
-
-`ck.status` separates four cases rather than two. `editor_not_running` means nothing was found by any route;
-`window_not_ready` means the process exists and has no frame-shaped window yet; `editor_invisible` covers the two
-ways an editor can be up while a host cannot reach it — a frame window that is not visible, and an editor the host
-cannot see at all. Both are reported as running, with the pid, title and window handle taken from the frame.
-
-Measured, low-integrity apphost at `ckagent.exe` beside this file, editor up:
-
-| Host | `Process.GetProcessesByName("CreationKit")` | frame window | reply |
-|---|---|---|---|
-| medium (`dotnet ckagent.dll`) | pid `37744` | `0x2A0DB4`, visible | `ok` |
-| low (`ckagent.exe`) | empty | `0x2A0DB4`, visible | `editor_invisible`, pid `37744` |
-
-The low host was handed no process at all — not even a module path it could not read — so `ck.status` now falls
-back to enumerating top-level windows and accepts the one whose class starts with `Creation Kit` and that owns a
-menu. That window yields the pid (`GetWindowThreadProcessId`, no process access), the title and the handle. Window
-messages are blocked between integrity levels by UIPI, so menu and UI calls cannot work from there; the plugin pipe
-is the way in, and it does: the same low host returned `pluginPipeAvailable: true`, read `blockedBy` from the
-plugin, and answered `ck.cell` over the low-labelled pipe.
-
-Every reply says which evidence it rests on, and on whose behalf: `clientIntegrity` (`low`, `medium`, `high`,
-`system`, `untrusted`, from the label SID of this process's token), `clientElevated` (the token's own elevation
-flag), `clientPrivileges` (the enabled privileges only, sorted — a held-but-disabled privilege cannot open
-anything), and `seesEditorProcess` / `seesEditorWindow` / `editorSight` where the last is `process`, `window` or
-`none`. That is what separates "there is no editor" from "this client was never shown one": the same editor in the
-same session reads `editorSight: "process"` from a medium host and `editorSight: "window"` from a low one.
-
-Measured on this host, same editor at pid `37744`: the low apphost answered `clientIntegrity: low`,
-`clientElevated: false`, `clientPrivileges: ["SeChangeNotifyPrivilege"]`, `seesEditorProcess: false`,
-`seesEditorWindow: true`, `editorSight: window`; the medium host answered the same privileges with
-`clientIntegrity: medium` and `editorSight: process`. One enabled privilege is the whole list on both — this is not
-an elevated account, which is the other reason the process is not open to the low host.
+Every pipe call carries a deadline (15 s), because the editor answers its commands from the UI thread: a
+command it starts to run inline holds the read open, and the tool used to sit there until the caller's own
+client timeout fired. A call that misses the deadline now answers `plugin_busy` with the command and the
+deadline, so a busy editor reads as busy and the call is repeated when it is idle. This is what keeps a
+cover pass from being lost: `mode=cover` waits its own bounded budget and answers `posted`, and
+`cover=status` reads the counts afterwards.
 
 Tool naming, namespaced so it does not collide with the existing `fo4editor` server:
 
@@ -474,22 +374,24 @@ matching the shape of `BGS/tools/mcp`. It needs no plugin to run:
 
 | Tool | Behaviour |
 |---|---|
-| `ck.status` | editor process, main window (found by owning a menu bar — the frame's class carries the build, `Creation Kit Fallout 4 [v1.11.246.0]`, so a class match never fires), installed build, manifest age, plugin pipe presence, and the blocking dialog's title, button captions and the caption its dismissal presses |
+| `ck.status` | editor process, main window, installed build, manifest age, plugin pipe presence |
 | `ck.commands` | capture the live menu tree into `<state>\commands.json`, or return the cache |
 | `ck.invoke_command` | resolve `File/Save`, `World/PreCombine Geometry For World` or an id, then `WM_COMMAND`; `dry_run` resolves only; refuses while a modal dialog has the window disabled |
 | `ck.save` | copy the plugin to `<state>\backups\<stamp>\`, post `File/Save`, then confirm the file changed — and report `save_not_observed` rather than claiming success |
-| `ck.camera` | read or set the camera pose through the plugin. Reads and writes `BGSRenderWindowCamera` (window at `0x143D491E8`, camera object at `+0xC0`) via its own `SetPosition`/`SetRotation`, because the `NiCamera` at `+0x10` is a slave the editor overwrites every frame — a write there is reverted within 400 ms (measured). Reports `rotate` (the node's nine values) and `sceneRotate` (the slave `NiCamera`'s nine, so the one-row difference is visible in the same reply instead of needing a probe), `positionSynced` (the scene camera's translation matched the request), `rotationOffset` (the pose-dependent `Σ|node − scene|`, since the scene camera's rotation is the node's shifted by one row), and for a lookat the `forward` row and the achieved `aim` plus a `via` naming whether the editor's own `LookAt` or the computed pose aimed it; `mode=orbit` circles a target at a given angle — either the world point `x/y/z` or a `reference` name, whose bounds centre is circled with the distance defaulting to the same fit `ck.frame` uses — sets the editor's pivot to that point, and reports the reference it used, the pivot it read back, the radius and the aim; `mode=rotate` turns the camera by the step `x/y/z` through the editor's own `RotateBy` and reports the view row, yaw, pitch and their deltas, so an orbit step can be compared against the editor's rotation directly; `mode=lens` reads the field of view from the scene camera's own frustum in degrees, and setting `fov` (degrees) or `zoom` (a factor, above 1 zooms in) writes the frustum and reports what was achieved; `camera_transform_unverified` until a cell gives a usable transform; `CKPEUnavailable` without the plugin |
-| `ck.aim` | turn the camera on a named reference without moving it, so an object is inspected from the view already chosen; optional `distance` backs off to that standoff first; reports the yaw and pitch it wrote, the achieved aim and the vertical offset, and says `aligned=false` when the view still misses. It tilts, because the forward row carries the pitch: the pitch is computed from the position the camera ends up at, so a standoff is aimed from where it leaves the camera, and a target straight above or below keeps the current heading and tilts to the pole rather than being refused. A comma-joined list aims at several references in one call, in order, from the same camera position, so a small area can be scanned without the caller computing poses; each step reports its own yaw, pitch and aim, and a standoff is refused with a chain because it moves the camera. `level` holds the horizon instead of centring — the heading turns onto the target and the pitch is written as 0, for a shot where a level view matters more than the object being dead centre — and reports `yawAim`, how far the heading reached the target, because `aim` falls to the cosine of the target's elevation when it is above or below the camera. `tools/aim-probe.ps1` asserts that contract against a live editor — level, above, below, directly overhead, standoffs from above, below and level, four `level` cases, and a two-step chain — checking the camera did not move where it must not, that the standoff settles at exactly the distance asked for, that the tilt's sign follows which side the camera is on, that holding the horizon writes pitch 0 and leaves the view row flat, and that the view row re-read afterwards dots the target. `ck.aim` and `ck.camera` also name the cell the camera acted in, the way `ck.frame` does: the message ends `in <EditorID>` and the payload carries `opened.editorId`/`opened.formId`/`opened.cell`, so a move made in a cell other than the one expected shows up in the same reply. Measured: `aim RobotFrenzyREF in aaaMarkers` with `aim: 1` and `opened.editorId: aaaMarkers`, and `camera get in aaaMarkers` |
+| `ck.camera` | read or set the camera pose through the plugin. Reads and writes `BGSRenderWindowCamera` (window at `0x143D491E8`, camera object at `+0xC0`) via its own `SetPosition`/`SetRotation`, because the `NiCamera` at `+0x10` is a slave the editor overwrites every frame — a write there is reverted within 400 ms (measured). Reports `positionSynced` (the scene camera's translation matched the request), `rotationOffset` (the pose-dependent `Σ|node − scene|`, since the scene camera's rotation is the node's shifted by one row), and for a lookat the `forward` row and the achieved `aim` plus a `via` naming whether the editor's own `LookAt` or the computed pose aimed it; `mode=orbit` circles a point at a given distance and angle, sets the editor's pivot to that point, and reports the pivot it read back, the radius and the aim; `camera_transform_unverified` until a cell gives a usable transform; `CKPEUnavailable` without the plugin |
+| `ck.aim` | turn the camera on a named reference without moving it, so an object is inspected from the view already chosen; optional `distance` backs off to that standoff first; reports the yaw and pitch it wrote, the achieved aim and the vertical offset, and says `aligned=false` when the view still misses |
 | `ck.cells` | list the Cell View's cells as EditorID, FormID, name and row index, optionally filtered — so a cell can be chosen by name instead of by index |
-| `ck.cell_load` | open a cell by EditorID or display name through the Cell View's own `NM_DBLCLK` handler; reports the row it matched and the cell the render window holds afterwards (`opened.editorId`, `opened.formId`), and returns `cell_not_loaded` naming the cell that stayed when the try changed nothing. `tools/cell-not-loaded-probe.ps1` forces that branch by asking for a name that only another pane lists, so the editor accepts the row and ignores it — measured: asking for `Default` while `aaaMarkers` was open answered `cell_not_loaded` with `requested: Default` and `opened: aaaMarkers`, the cell was still `aaaMarkers` afterwards, and loading `aaaMarkers` itself answered `ok` so the check cannot pass by a tool that always says `cell_not_loaded` |
-| `ck.cell` | the cell the render window holds, by EditorID and form id, plus `interior`, `gridX`, `gridY` and `hasWorldSpace` — the same placement the plugin's `status` reports, read from the editor's own `TES` singleton, so a load is confirmed from the reply instead of inferred from a pointer. The grid only means anything when `interior` is false; an interior renderer reports `0, 0`. `tools/cell-probe.ps1` loads cells from the Cell View's own list and asserts the reply names each one, and fails if a fabricated pointer-only reply would pass |
-| `ck.frame` | load a cell and stand the camera in front of one of its references (`reference` = reference EditorID, base object EditorID or 8-digit form id; optional `cell`, `distance`, `yaw`), so an object is inspected without navigating by hand; a `cell` that is already open is used as it is — the load and its wait-for-change are skipped and the reply says `(the cell was already loaded)`, measured at 0 s against the same cell and 1 s for a different one, so framing several references in one cell costs one load; the standoff and the height are taken from the reference's own bounds (`2.4` bounding-sphere radii back, `30°` above the box centre), and an explicit `distance` overrides that; reports the match, the target, the box centre and the bounds it framed, whether those bounds came from the reference or a fallback, the pose, whether the object sits ahead along the view row, and the cell the render window actually holds |
-| `ck.dismiss` | clears the dialog blocking the editor before anything has failed, where `blockedBy` and `dismissBy` in `ck.status` let a caller see the block in advance. It takes the dialog `ui.modals` flags as blocking (or an explicit `hwnd`), presses the same caption the automatic dismissal uses, and only reports `dismissed` once a status read shows no `blockedBy`; `nothing_blocked` means there was nothing to do. Measured on the hidden `Data` dialog: `dismissed 'Data' with Cancel`, payload `{"dismissed":1,"by":"Cancel","hwnd":"0x1A00B8","title":"Data","cleared":true,"blockedBy":""}`, and `nothing_blocked` when nothing blocked |
-| `ck.status` (`dismissBy`) | the caption the automatic dismissal will press, taken from the same choice the dismissal uses (`Cancel`, else `Close`, else `WM_CLOSE`), so a caller can see what will happen as well as what is available. Measured on the hidden `Data` dialog: `dismissBy \"Cancel\"`, and `ui.dismiss` then reported pressing `Cancel` |
-| `ck.status` (`modalButtons`) | the captions of that dialog's buttons, so a caller picks a caption that exists instead of guessing. Measured on the hidden `Data` dialog: `blockedBy \"Data\"` with `modalButtons [\"OK\", \"Cancel\", \"Set as Active File\", \"Details...\"]`, the same four `ui.modals` lists for that hwnd; with nothing blocking, both are empty (`\"blockedBy\":\"\"`, `"modalButtons":[]`) |
+| `ck.cell_load` | open a cell by EditorID or display name through the Cell View's own `NM_DBLCLK` handler; reports the item it opened |
+| `ck.cell` | the cell the render window holds, by EditorID and form id, so a load is confirmed from the reply instead of inferred from a pointer |
+| `ck.frame` | load a cell and stand the camera in front of one of its references (`reference` = reference EditorID, base object EditorID or 8-digit form id; optional `cell`, `distance`, `yaw`), so an object is inspected without navigating by hand; reports the match, the target, the pose and whether the object sits ahead along the view row |
 | `ck.status` (`blockedBy`) | names the hidden modal that has disabled the editor, so a blocked editor is not mistaken for a hung or idle one; every plugin tool reads it after a failure, dismisses that dialog with `ui.dismiss`, retries, and only reports it by name and handle if the block survives. The reply keeps the original failure code and only the message gains the block, saying whether the dialog was dismissed but the block persisted, or could not be dismissed at all. `tools/blocked-modal-probe.ps1` covers both outcomes against a live editor instead of by hand; the still-blocked one is forced with `CKAGENT_TEST_DISMISS_FAILS=1` because a dialog the server does handle is gone by the time the call returns |
-| `ck.ui` | passthrough to the in-process control tools (`ui.items`, `ui.select`, `ui.notify`, `ui.command`, `ui.click`, `ui.windows`, `ui.tree`, `ui.menu`, and `ui.cellclose`, which frees the render window's cell so `File/Data` opens again): `method=ui.notify`, `args=0x16C1752 dblclk 2` |
+| `ck.ui` | passthrough to the in-process control tools (`ui.items`, `ui.select`, `ui.notify`, `ui.command`, `ui.click`, `ui.windows`, `ui.tree`, `ui.menu`): `method=ui.notify`, `args=0x16C1752 dblclk 2` |
 | `ck.resolve` | ask the plugin for one fresh resolution of both anchors and return the addresses, or the reason nothing validated — the refresh to call after loading a cell |
+| `ck.navmesh` | create, apply and inspect navmesh, and sweep a whole plugin: `mode=audit` walks the Cell View (`filter`, `after`, `limit`, 5 by default) and answers per cell whether it carries navmesh, its forms, vertices, triangles, cover triangles and whether it needs work (no navmesh, no triangles at all, or a form that could not be read - a build leaves an empty placeholder form behind, so an empty form on its own is not work), leaving the last cell loaded; `mode=batch` runs the whole pipeline on each listed cell through the same stages as `mode=apply` and saves only the cells whose check came back clean, one cell per call by default so a long sweep advances with `after`; `mode=cover` posts the cover group's cell command (`cover=generate` is `Find Cover Edges`; `generate_all` opts into `Generate Cover For All Spaces`, which sweeps the whole load order) or `clear` / `clear_generated`, then waits up to `wait_seconds` (default 20, limit 60) for the counts to read back, because those commands answer nothing and compute on the editor thread; a pass that outlasts that budget answers `posted` with the counts from before it and `cover=status` reads them once the editor is idle, so a long cover run is resumed instead of lost to a client timeout; `mode=apply` posts generation, then Finalize Cell NavMeshes, then Check NavMeshes, and saves the cell with the editor's own File/Save command only when that check reported no failure; `dry_run=true` resolves the steps and the save command and posts nothing; `mode=generate` runs the generation on its own and waits for it properly: it posts the generator's caption, waits for the dialog the editor opens after the reply, presses `OK`, then polls until the count settles (`wait_seconds`, default 240, limit 900) because a build empties the arrays first and writes them minutes later; the answer carries the counts before and after and the time taken, and a cell that reads 0 for the whole window answers `generation_incomplete` instead of claiming success; `mode=batch kind=mesh` is the worldspace sweep: one invocation walks the Cell View rows for the selected worldspace, and for each row proves the load by form id, strips the cell, runs one Recast build, and answers per cell with the strip reply, the generate payload, the counts read back from `nav.state`, and `agree`; a row that does not load or does not become the requested form is a named per-cell failure (`load_timeout`, `form_mismatch`) and the pass continues. `mode=batch kind=mesh` saves what it generates: each agreed cell runs the editor's own Save and answers `persisted` plus a `save` block (status, code, file, path, back-up, bytes before and after, `savedAtUtc`, elapsed). A cell whose save did not reach disk is reported `save_failed` and the batch is `incomplete` - a mesh only the editor holds is never called delivered. Saving a loaded master cannot happen in place: the editor opens a **Select Target Plugin** file dialog, which this tool answers by typing `save_as=<file>` into it and pressing Save. That typing is the open problem: the dialog's name box is a DirectUI element with no window handle, so `ui.type`'s key events and `WM_CHAR` both leave it empty and the Save button stays disabled - the persistence chain is wired but unproven until that box can be filled (UI Automation's value pattern is the next candidate).
+
+Rows are opened by their own list index (`ui.notify <listview> dblclk <row>`), not by EditorID, because exterior cells share EditorIDs: `DiamondCity` holds several cells named `Wilderness`, and `ui.cellload Wilderness` always opens the first of them. `mode=load` takes the same addressing for a single cell (`row=<index>` or `form_id=<FormID>`); a row that cannot land answers `load_timeout`, measured with `row=9999` on `Wilderness` in `DiamondCity`. A build is limited by its wait window alone: the pipe can go silent for tens of seconds while the editor builds, so a quiet pipe no longer ends the wait early - `DiamondCityUpperStands` hit exactly that, a momentary `CKPEUnavailable` at 102 s while the build was still running. The per-row check still proves the load by form id against `nav.state` before any geometry is read, so a row that lands another cell is `form_mismatch` and a row that never lands is `load_timeout`, both named with the cell and form id. The envelope carries that audit per cell (`audit`: cell, formId, interior, references, forms, vertices, triangles, loaded), so one invocation proves payload, state and audit agree - no `mode=audit` call afterwards. Measured: `kind=mesh filter=Wilderness limit=2` on `DiamondCity` meshed both `Wilderness` rows, `00240045` (0/0 after strip, 452/529) and `01000F9D` (0/0, 453/530), `agree=true`, `loaded=true`, `interior=false`, each with its own form id.
+
+Measured: `kind=mesh filter=DiamondCityOutfield limit=2` meshed `DiamondCityOutfield01` (form `00000FE9`, 0/0 → 456 vertices / 462 triangles) and `DiamondCityOutfield02` (`00000FEA`, 0/0 → 711 / 751), both `agree`; `filter=Wilderness limit=2` meshed the first row (`00240045`) and answered `load_timeout` for the second (`001893CD`), because several Commonwealth cells share the EditorID `Wilderness` and a name cannot address one of them - the failure was named and the first cell kept its mesh. A city exterior build is slower than the interiors: `DiamondCityUpperStands` (785 references, form `00000FDA`) took 69 s from stripped 0/0 to 152 vertices / 135 triangles, and the wait now survives a busy editor instead of reporting `generation_incomplete` while it is still building. `mode=load` takes `cell=<EditorID>` and, for an exterior, `worldspace=<name>`: the Cell View lists one worldspace at a time through its combo (`Interiors`, `Commonwealth`, `SanctuaryHillsWorld`, ...), so the tool selects that worldspace, opens the cell, then polls `nav.state` until the loaded form id is the requested one, answering `no_worldspace` when the view has no such worldspace and `load_timeout` when the cell never becomes the loaded one. `worldspace` also rides along on `mode=audit` and `mode=batch`, which report `interior` and `references` per cell so exterior rows are distinguishable in the same table; measured on `PrewarSanctuaryExt01` (form `000A801D`, 307 references, exterior, landscape): `mode=strip` cleared 2 forms / 400 vertices, `mode=state` then read 0 vertices and 0 triangles, and one `mode=generate confirm` call built 1067 vertices / 1168 triangles in 15 s, with `mode=state` and `mode=audit` reporting the same 3→4 forms and counts for that cell. `mode=strip` zeroes the loaded cell's navmesh arrays through the plugin (measured: `{"stripped":2,"verticesCleared":8}`, then `mode=state` reads 0 triangles), which is the only way to empty a cell on purpose because no NAVMESH caption does it outside the edit session; a cell emptied that way then goes to a real mesh in one `mode=generate` call (measured on BostonAirportAliasCell: before 2 forms / 0 vertices / 0 triangles, after 3 forms / 42 vertices / 34 triangles in 15 s, no dialog), and `mode=state` and `mode=audit` then report those same 42 vertices and 34 triangles on the same forms; `mode=finalize`, `mode=check` run one step; `mode=run` executes one named navmesh command (command-level edits); `mode=state` reports presence and coverage with each form's real vertex and triangle counts (`coverage.geometry` = `form_arrays`); `mode=commands` lists the live NAVMESH menu with ids and enabled state. Every mutating mode needs `confirm=true`; `mode=check` and `mode=apply` answer with a structured per-cell verdict parsed from the check's log lines instead of those lines. A cell is identified by its form id, not its Cell View row: the view lists a dirty cell twice (`BostonAirportAliasCell` and `BostonAirportAliasCell *`, both form `00172297`), so `mode=audit` and `mode=batch` merge those rows, report the name without the marker, and refuse to read geometry from a row that did not become the loaded cell (`load_timeout`), because `ui.cellload` answers before the render window settles - a swept cell that silently failed to open used to be reported under the previous cell's geometry. Geometry is always read from the cell's own `coverage` block, the one `mode=state` reports, so the three answers cannot disagree about one cell. Measured on three stripped interiors in one `mode=generate` call each: `DmndValentines01` (346 refs) 0/0 -> 99 vertices / 101 triangles, `InstituteBioScience` (1566 refs) 0/0 -> 1046 / 1126, `InstituteReactor` (2364 refs) 0/0 -> 971 / 1029, with `mode=state` and `mode=audit` reporting the same forms and counts for each. Resolving by caption is the point: the recorded ids belong to 1.11.246.0 alone. No NAVM payload is read or edited |
 | `ck.generate_precombine` / `ck.generate_previs` | start `-GeneratePreCombined:` / `-GeneratePreVisData:` as a job, one at a time |
 | `ck.job_status` / `ck.job_log` | job state, exit code, artifacts, captured `EditorWarnings.txt`, console tail |
 
@@ -522,74 +424,308 @@ Loading a cell needs no mouse: the plugin drives the editor's own controls on th
 | `ui.click <hwnd> <caption>` | press a dialog button by caption, which is how a command that opened a modal is dismissed |
 | `ui.dismiss <hwnd>` | press the button that abandons a dialog's pending work — `Cancel`, then `Close`, else `WM_CLOSE` — so a blocking modal clears without knowing its captions; OK is never pressed |
 | `ui.modals [reveal <hwnd>]` | list every dialog with its owner, visibility, enabled state and button captions, flagging as `blocking` the invisible one that owns a disabled window; `reveal` shows one |
-| `ui.cells [filter]` / `ui.cellload <name>` | name-addressed cell list, and open one; both read the collection the Cell View's combo has selected, so an exterior worldspace is only reachable after switching it |
-| `ui.cellclose` | free the cell the render window holds, at `BGSRenderWindow+0xF8`, which is the state `File/Data` checks before it opens; reports the pointer it cleared, and `closed:false` when nothing was held |
-| `ui.dataload <plugin>` | tick a master file in `File > Data` (two calls: the command, then the dialog) |
+| `ui.cells [filter]` / `ui.cellload <name>` | name-addressed cell list, and open one |
+| `ui.dataload <plugin>` | tick a master file in `File > Data` (two calls: the command, then the dialog); `ui.dataload <plugin> active` selects that plugin and presses `Set as Active File`, which is what makes a master cell writable |
+| `nav.state` | the loaded cell's navmesh presence and coverage from its own forms: form count, each form's id, navmesh id, parent cell and vertex/triangle counts, plus a coverage block that sums those counts and carries the measured triangle area (`area`, `areaTriangles`) |
+| `nav.commands` | every navmesh entry in the live menu, with its path, id and enabled state |
+| `nav.check` / `nav.finalize confirm` | post Check NavMeshes / Finalize Cell NavMeshes for the loaded cell; check answers with the per-cell verdict, finalize is refused without `confirm` |
+| `nav.check` report | staged like `nav.apply`: the first call posts the command and records the report offset **before** the post, later calls read what the check appended and answer `pending` until the report goes quiet, then `done: true` with `lines`, `report.source` and `report.startOffset`, plus `verdict`, `counts` and `findings` (below). The verdict is computed from those lines, so it no longer depends on a log slice read before the check ran |
+| `nav.apply` verdict | the `done` payload carries `verdict`, `counts` and `findings` at its top level, classified from the same captured lines `nav.check` reports, so a caller reads the result of the run without parsing anything. `ck.navmesh mode=apply` keeps its own structured `verdict` and adds `pluginVerdict` beside it, and refuses to save when the two disagree (`verdict_mismatch`), because a cell whose result only one classifier believes is not a result |
+| `nav.apply abort` | drops a staged run and answers `dropped`, `dismissedBy` (`cancel`, `accept` or `null`), the dialog it found and the steps that ran. Recovery, not a step: it needs no `confirm`, and it exists because a run that stalls mid-stage used to leave the editor modal until it was answered by hand. Every failure path in the pipeline abandons the same way — dismissing the generation dialog it opened (cancel preferred, accept when there is no cancel button) and dropping a check capture it opened but never posted — so the next `nav.apply` starts at the generation instead of resuming the dead run. `ck.navmesh mode=abort` exposes it, and `mode=apply` calls it itself when a run times out at its tick limit or the pipe call fails |
+| `nav.check` findings | the reply classifies on the plugin side as well, so a raw pipe client sees the findings without the server: `verdict` (`clean`, `warnings`, `errors`, `unknown`), `counts` (`errors`, `warnings`, `recognized`, `reported`) and `findings[]` of `{severity, cell, navmesh, message, line}`. `cell` and `navmesh` are `null` when the message carries neither. A report with nothing recognisable in it stays `unknown` rather than `clean`. The fragment table in `plugin/AgentNavmeshFindings.cpp` is checked against `NavmeshVerdict.cs` by `tools/navmesh-command.test.ps1`: a server rule the plugin does not recognise, a fragment no server message writes, or a fragment severity that disagrees with the server's all fail the static pass |
+| `nav.generate <kind> confirm` | post `Generation/<kind>` (recast, havok or advanced) for the loaded cell, then press the dialog that command opens and wait for it to close, because the post alone generates nothing |
+| `nav.apply <kind> confirm` | post generation, accept its dialog, wait for the close, then Finalize Cell NavMeshes, then Check NavMeshes, in that order, stopping at the first refusal; fails with `no_geometry_change` when the cell's own vertex and triangle counts did not move. It is a **staged** pipeline: each call advances one stage (`generate`, `accept`, `settle`, `finalize`, `check`) and answers `pending: true` with the steps done so far, and the last call answers `done: true` with the before and after totals. No stage sleeps, because the handler runs on the editor thread. Its check stage opens the same capture `nav.check` uses before it posts, so the final reply carries `report` with the check's own `lines`, and both modes classify the same lines instead of apply re-reading the log |
+| `nav.plan <kind>` | resolve those three commands plus `File/Save` and report each path, id and enabled state, without posting anything |
+| `nav.save confirm` | post the editor's own `File > Save`, resolved by menu path, so the cell is written by the editor; refused without `confirm` |
+| `nav.run <caption> confirm` | post one named navmesh command from the live menu, resolved by caption, which is the command-level edit surface |
+| `nav.state` cover fields | `coverage.edgeCover` counts cover per edge from the triangle flags word: `edge01`/`edge12`/`edge20` are triangles whose mask bit `16`/`17`/`18` is set, each named after the link it sits on (`EdgeLink_0_1`, `EdgeLink_1_2`, `EdgeLink_2_0`) so the key needs no bit-to-edge mapping, `any` is a triangle with at least one, `all` is a triangle with all three, `openEdges` counts masks sitting on an edge whose link is `FFFF`, and `heightSet` counts triangles whose `+0x0C` cover height is not the `FLT_MAX` sentinel. Counted only over the triangles the area walk accepted, so `edgeCover.any` never exceeds `areaTriangles` |
+| `nav.state` per-form cover | each readable form carries `cover` with those same seven fields, measured from its own triangles, so a cell holding several navmeshes can be compared mesh by mesh instead of only in total. It is `null` for a form whose geometry is `empty` or `unreadable`, where no triangle was counted. The forms must sum to `coverage.edgeCover` field for field, because both walks accept exactly the same triangles |
+| `nav.state` geometry fields | every form carries `"geometry": "read" \| "empty" \| "unreadable"`; a Recast pass empties the forms it replaces, so those report real zeros (`vertices`, `triangles`, `area`) with `geometry: "empty"` instead of `null`, and coverage counts them in `readForms` / `emptyForms` / `unreadableForms` |
+| `nav.accept` | find the generation dialog (visible or hidden), press its `OK`, and return at once; the pipe handler runs on the editor's UI thread, so no call may sleep or the dialog can never open |
+| `place.commands` | the Edit menu's placement commands this build offers (`Duplicate`, `Paste Render`, `Paste in Place`, `Copy Render`) with ids and enabled state |
+| `place.duplicate confirm` | run `Edit > Duplicate` on the current render-window selection and report the cell's reference count before and after; a greyed item is `command_disabled`, an unmoved count is `no_change` |
 
 Measured flow (editor 1.11.246.0, master `Fallout4.esm`): `ui.cellload AndrewStation01` opens
 Andrew Station, `cell` reports `loaded:true` with the cell pointer, and the camera then resolves where
 it previously refused with `camera_transform_unverified`.
 
-### Reaching an exterior worldspace by name, measured
+## A navmesh pass with no manual steps
 
-The Cell View lists one collection at a time: `Interiors`, `Recent Cells`, then one entry per worldspace.
-`ui.cellload` matches rows in that list and nothing else, so a cell in an exterior worldspace is
-unreachable by name until the combo is switched to that worldspace. The combo is the first `ComboBox`
-under the Cell View pane — `ui.tree <Cell View hwnd>` prints it with its items and its current selection
-(id `2083` in 1.11.246.0, `0x262A14` on the run these numbers come from, so read the pane's own tree
-rather than hard-coding the handle).
+A whole plugin's navmesh work is four answers, none of which needs the Cell View clicked by hand:
 
-| Step | Command | Reply |
+| Step | Answer | What it replaces |
 |---|---|---|
-| find the pane | `ui.windows`, the `#32770` titled `Cell View` | `0x4012E4` |
-| read the entries | `ui.tree 0x4012E4` | first `ComboBox`: `Interiors`, `Recent Cells`, `Commonwealth`, `DiamondCity`, `DiamondCityFX`, `Goodneighbor`, `SanctuaryHillsWorld`, `selected: 0`, id `2083` |
-| switch | `ui.select <combo> 3` | `{"selected":"3"}`; the cell list refills — 165 rows for `DiamondCity` against 324 for `Interiors` |
-| load by name | `ck.cell_load {"name":"DiamondCityOrigin"}` | `ok`, `ui.cellload DiamondCityOrigin -> opened DiamondCityOrigin` |
-| switch away | `ui.select <combo> 6` | list refills with `SanctuaryHillsWorld`'s cells |
-| same name again | `ck.cell_load {"name":"DiamondCityOrigin"}` | `no_cell`, `no cell view item matches: DiamondCityOrigin` |
+| find the work | `ck.navmesh mode=audit filter=<name> limit=20` | double-clicking every cell in the Cell View to see which ones lack navmesh |
+| do the work | `ck.navmesh mode=batch kind=recast confirm=true` then the same call with `after=<nextAfter>` | loading a cell, running Recast, finalizing, checking and saving it, one cell at a time |
+| cover | `ck.navmesh mode=cover cover=generate confirm=true` (or `clear`, `clear_generated`, then `cover=status` for the counts) | finding the cover group's captions, running the whole-load-order one by accident, and trusting that they did something |
+| prove it | `ck.navmesh mode=state`, `mode=check`, or `mode=audit` again | reading the render window |
 
-Two things that follow from this. Exterior cells share the editorId `Wilderness` — 100 of
-`DiamondCityFX`'s 101 cells do — so a name load cannot disambiguate them: read the list with
-`ui.items <list hwnd>` (its columns are `EditorID`, `FormID`, `Name`, `Loaded`, `Coords`, `Location`,
-`Owner`, `Last Combined`, and `Coords` is the cell's grid position) and open the row with
-`ui.notify <list hwnd> dblclk <row>`. And the combo is the only thing that decides what a name reaches:
-loading a cell does not switch it, and nothing in the reply says which worldspace a name was resolved
-against, so switch deliberately and check `ck.cell`'s `interior`/grid afterwards.
+The batch reuses `mode=apply`, so the save gate is the same one: a cell is written only when its own check came back clean *and* the plugin's verdict agrees with the parsed one, and a failure is reported for that cell without abandoning the rest of the sweep. `mode=batch` deliberately walks one cell per call by default (`limit` raises it to 20): an apply can take minutes, and a call that holds the editor through a dozen of them is a call that times out and leaves the run behind. `nextAfter` names the last cell it touched, so the sweep resumes exactly where it stopped without any state in the server.
 
-### Picking a cell by coordinates, measured
+What is left for a human is only what the editor has no command for: painting or moving individual triangles in the render window. Everything else in the `NAVMESH` menu is reachable — `mode=run` posts any of its 49 captions by name, and the modes above are the ones a pass needs in order.
 
-A row index is a poor handle for an exterior cell: the list refills under every worldspace switch and when the
-editor loads cells on its own, so an index saved from an earlier run points at something else. The Cell View's
-`Coords` column is the grid position, and that is stable.
+### Generation is asynchronous, and the tool waits for it
 
-| Column | Value for the cells used here |
-|---|---|
-| headers | `EditorID`, `FormID`, `Name`, `Loaded`, `Coords`, `Location`, `Owner`, `Last Combined` |
-| `Coords` | `-1, -1` for `DiamondCityEntrance`, `0, 0` for `DiamondCityOrigin`, `2, 1` for `DiamondCityOutfield01` |
-| `ck.cell` after the load | `gridX`, `gridY`, `interior` — `0, 0` and `2, 1` for those two |
+Measured on a running editor, with the cell counts read back after every step:
 
-An exterior cell is 4096 units across, so a world position becomes a grid position by flooring:
-`gridX = floor(x / 4096)`, `gridY = floor(y / 4096)`, and a negative component floors away from zero. To pick a
-cell by where it is rather than by where it sits in a list:
+- `Generation/Advanced` (40561) is **always** enabled and opens a dialog carrying the pipeline as buttons:
+  `OK`, `Cancel`, `Generate Objects`, `Land and Objects`, `Finalize`, `Find Cover`. `Generation/Recast-Based
+  Generation` and `Generation/Havok-Based Generation` report disabled until the cell has a navmesh edit
+  session, and posting them then opens the `Recast Navmesh Generation` dialog (`OK`, `Cancel`, `Recast
+  Options`, `Default Settings`, `Include Landscape`, `Generate Float Navmesh`).
+- A build **clears the form's vertex and triangle arrays and writes the new geometry minutes later**. A
+  single reading taken after the dialog closes shows `0`, which reads like a failure and is not one. The
+  first clean measurement of a finished build was a BeaconHillPub navmesh of 465 vertices and 470
+  triangles, arriving well after the press.
+- `NAVMESH/Remove Cell NavMeshes` (40562) posts, is accepted, and changes nothing from outside the edit
+  session, and `Land and Objects` is not a strip either: it starts a build, and the `0` it produces is that
+  build's own first phase. So there is no supported way to empty a cell's navmesh from a caption alone.
 
-1. read the list — `ui.items <cell list hwnd> <count> 0`, the list being the `SysListView32` under the Cell
-   View pane that carries those eight headers;
-2. take each row's `Coords` cell (fifth column) and compare it with the grid from the coordinates;
-3. open that row — `ui.notify <list hwnd> dblclk <row>`;
-4. confirm with `ck.cell`, which reports `gridX`/`gridY` and `editorId` for what the render window now holds.
+The tool therefore treats generation as a wait, not a post: `mode=generate` sends the generator's caption
+with `nav.run`, waits for the dialog the editor opens *after* the reply, presses its `OK`, and then polls the
+cell until the count stops moving (`wait_seconds`, default 240, limit 900). Two live calls: BeaconHillPub
+384 → 470 triangles, BeaconHillApartments 199 → 219 triangles and 248 → 221 vertices, both reported with the
+settled count and the time it took. A call that sees `0` for the whole window answers
+`generation_incomplete` instead of claiming success.
 
-Measured on one pass: the list held `2, 1` at row `3`, `ui.notify 0x362B12 dblclk 3` opened
-`DiamondCityOutfield01` with `gridX 2, gridY 1`, and a reference in that cell — `BillboardMed04JoeSpuckies` —
-sits at `9584.1836, 5252.5830, -190.0202`, which floors to `2, 1`. The same arithmetic gave `0, 0` for
-`DiamondCityOrigin` and `-1, -1` for `DiamondCityEntrance`. Where a cell does have its own EditorID, the name
-route above is shorter; coordinates are what is left when the name is `Wilderness` and shared, or when the
-position is what you were given.
+Still out of reach: anything that needs a triangle *selection* - `Remove Cell NavMeshes`, `Move Selection To
+Separate NavMesh`, the precut and cover groups on a chosen region. `NAVMESH/Select Triangle By Index` (40594)
+plus the `Navmesh` panel's own trait buttons (`NoLargeCreature`, `Preferred`, `Water`, `Door`, `Float`,
+`Normal`) are the addressable handles that would close that, and both need a `checked` state on
+`nav.commands` and a rebuild of the DLL.
 
-One more thing the same run showed: selecting the entry that is *already* showing does not refill the cell
-list, so a stale list keeps refusing names that the combo looks ready for. `ui.select <combo> 0` and then
-`ui.select <combo> 3` refills it, after which `ui.cellload DiamondCityOrigin` answers
-`{"cell":"diamondcityorigin","via":"list"}`. `tools/aim-probe.ps1` steps the combo away and back for
-that reason, and retries the load, so a run that follows another one does not inherit the previous list.
+## Navmesh, measured (editor 1.11.246.0)
+
+Navmesh is a real top-level menu, not a hidden API. `ui.menu` on the frame returns a `NAVMESH` menu with
+49 entries; the two this tool family runs are `NAVMESH/Check NavMeshes` (id 40568) and
+`NAVMESH/Finalize Cell NavMeshes` (id 40608), and both were enabled with `AndrewStation01` loaded. Those
+numbers are exactly why the tools resolve by caption: an id belongs to one build, so a hard-coded one
+posts a command that means something else after a CK update.
+
+There is **no Warnings window on this build**. `ui.command Warnings` answers `no_command` (no menu item
+carries the word), `ui.windows` lists no such window, and posting `Check NavMeshes` opened nothing and
+left the editor enabled (`blockedBy` empty). What a pass writes goes to CKPE's log: the editor's Log
+Window is an `RTEDITLOG` with a `RICHEDIT50W` child, and CKPE mirrors the same stream to
+`Logs/CKPE/CreationKitPlatformExtended.log`. So `ck.navmesh mode=check|finalize` posts the command and
+then returns the log lines that appeared after it — the only verdict the editor actually leaves behind.
+The plugin's own `CALL`/`RPLY` records are filtered out of that list, because the pipe echo is not a
+verdict. For a clean cell the list is empty, and the reply says so instead of inventing a pass.
+
+Presence comes from the form model, not from the log. `TESObjectCELL::IsNavMesh()` says whether the cell
+carries a navmesh array at all, `GetNavMeshesCount()`/`GetNavMeshes()` list it, and each `NavMesh` form
+answers `QNavmeshID()` and `GetSaveParentCell()` (CKPE `EditorAPI/T/TESObjectCELL.h`, `N/NavMesh.h`,
+`T/TESChildCell.h`). Those are the confirmed members; `nav.state` reports exactly them, so a cell whose
+forms point at another cell is visible as `parentMismatch` instead of looking covered.
+
+Coverage reports counts measured from the form body, because the headers expose no accessor for them.
+Two `BSTArray` heads sit at the measured offsets `0x40` and `0x58`; the first carries 12-byte float
+points, the second carries triangles, and each head's element count is the vertex or triangle count.
+Both were confirmed against the master file: `NAVM 0009C702` in `Fallout4.esm` declares 1809 vertices
+and 2012 triangles and the live form reports the same numbers, with its vertex bytes identical to that
+record's vertex block, while `NAVM 002496FF` matches at 4 vertices and 2 triangles. `coverage.geometry`
+is `form_arrays` and the counts are summed over the listed forms.
+
+The triangle element is 24 bytes in memory and 21 in the NAVM record, and its three vertex indices sit
+at `+0x00`. The stride was swept against every triangle of four navmeshes (`0009C702` 2012, `002496FF`
+2, `000C6F16` 26, `00002307` 23): 24 holds for all 2063 of them at offset 0 while the neighbouring
+strides reach only half, and parsing the record of `0009C702` at 21 holds for all 2012 triangles with
+no vertex index out of range and no link pointing past the triangle count. The layout, confirmed with
+`llvm-objdump` on the creation path (`0x140EFFA59` `or dword ptr [rax+0x10], 0x800` and the `index*3`
+scaling into the array at `navmesh+0x58`):
+
+| offset | size | field |
+|---|---|---|
+| `+0x00` | 3 x u16 | vertex indices into the form's `0x40` array |
+| `+0x06` | 3 x u16 | edge links: adjacent triangle index, `FFFF` = no neighbour |
+| `+0x0C` | f32 | cover height; `7F7FFFFF` (FLT_MAX) where unset |
+| `+0x10` | u32 | flags word |
+| `+0x14` | 4 bytes | zero in every triangle measured |
+
+The word is two halves: the low `u16` is the triangle's `Flags` and the high `u16` is its `CoverFlags`,
+which is how the on-disk `NavmeshTriangle` stores them — `Vertices` (3 x i16), `EdgeLink_0_1`, `EdgeLink_1_2`,
+`EdgeLink_2_0`, `Height` (f32), `Unknown` (u8), `Flags` (u16), `CoverFlags` (u16), 21 bytes per triangle in
+`NVNM` (Mutagen's `NavmeshTriangle_Generated.cs`, mirroring xEdit's `wbNVNM`). So a "flag bit 18"
+is `CoverFlags` bit 2, and the link names give the edges it indexes: bit 16 = edge (`v0`,`v1`), bit 17 =
+(`v1`,`v2`), bit 18 = (`v2`,`v0`) - reported as `edge01`, `edge12` and `edge20`. Parsed against a CK-saved `NVNM` (version 15, cell `00074D28`, 1809
+vertices, 2012 triangles): bits 0/1/2 of `CoverFlags` are set on 538/694/21 triangles, and in every one of
+those the edge with the same index is a boundary edge — a set bit on a linked edge never occurs.
+
+Bit 18 is rare because the edge it names is rarely open, not because it means something else. The same
+payload gives boundary rates of 35.7% for (`v0`,`v1`), 43.2% for (`v1`,`v2`) and 5.6% for (`v2`,`v0`): the
+CK's triangulation shares (`v2`,`v0`) with the neighbouring triangle in about 94% of triangles, making it
+the pair's internal edge, while the other two edges are the ones exposed to walls. Cover only exists on an
+open edge — a wall has no neighbouring triangle to carry the other side — so a 5.6% boundary rate caps
+how often bit 18 can appear. The masks seen there agree: 0, 1, 2, 3 (two edges covered, 148 triangles),
+4 (10) and 6 (11, both edges at `v2` open); 7 never, which is what an internal (`v2`,`v0`) edge implies,
+and 5 never in that cell.
+
+The editor settles the part offsets alone cannot. Posting the CK's own `NAVMESH/Clear Cover` on the loaded
+cell `DmndValentines01` (one form, 71 triangles) took `edgeCover` from 22/26/0 (`any` 38, `all` 0, `openEdges`
+48) to 0/0/0 with the same 71 vertices and 71 triangles, so the high half of the flags word is exactly the
+cover the editor edits, and bits 0/1/2 name its edges. The display-only siblings - `Find Cover Edges`, `Draw
+Cover`, `Cover Test`, `Audit Navmesh Report` - left every `nav.state` count identical and report nothing the pipe can
+read back, which is why the measurement is a clear: it needs a cell whose cover may be dropped, and a reload
+(`File > Data`, same load order) restores it from disk because nothing here is saved.
+
+Inside the flags word, bit 11 (`0x0800`) is the base flag the generator sets on each triangle it emits,
+and the creation path skips triangles whose `(flags >> 11) & 1` is already set. Bits 0-2 (`0x1`/`0x2`/
+`0x4`) and bits 16-18 (`0x10000`/`0x20000`/`0x40000`) are per-edge masks, walked with a rotating single
+bit; the high three are set in master data only on edges whose link is `FFFF` - zero of 1094 triangles
+break that - so they are the per-edge cover flags, which is also why `0x7F7F` shows up next to them: it
+is the high half of the float `0x7F7FFFFF`, not a cover value. Bits 6 (`0x40`, 54 triangles of 2012) and
+10 (`0x0400`, 2) are editor flags whose meaning is not recovered.
+
+The `+0x0C` float is not the cover height, and the mesh says so three ways. It is present on 2010 of the
+2012 triangles, including the 917 that carry no cover bit at all, and the editor's `Clear Cover` leaves it
+set on all 71 triangles of `DmndValentines01` - a triangle without cover has no cover edge for it to
+describe. Measured against the vertices of the edges those bits mark, across the whole of cell `00074D28`
+(1809 vertices, 2012 triangles, 1252 covered edges): it never equals a covered edge's height (0 of 1252
+matches at a 0.001-unit tolerance), it falls inside the triangle's own z span on 3 of 2010 triangles, and
+it sits a median 322 units above the top of the edge it would otherwise describe. It is not a coordinate on
+any axis (r = 0.14 with mean x, -0.12 with y, -0.31 with z), not a shape measure (area 0.04, perimeter 0.04,
+longest edge 0.04, triangle altitude 0.01), not the covered edge's length and not the distance from the
+edge to the nearest other vertex (0 exact matches in 150 sampled edges). What it is instead is a smooth
+local field: 42.9% of the 2155 edge-sharing triangle pairs carry the same value, the median difference is
+2.43 units and 65% differ by under 10, while the busiest value (exactly 170.0 on 572 triangles) appears at
+world heights from -238 to 1043, so it is not an elevation either. A scene-derived clearance - the ceiling
+height above the triangle - fits every one of those measurements and is not proven; what is proven is that
+it is not cover data and must not be reported as a cover height.
+
+`coverage.area` sums each triangle's half cross-product magnitude and `areaTriangles` says how many
+triangles contributed; both are null when any form cannot be read in full, because a partial read would
+understate the total. Measured live: `000C6F16` 72626.77 units over 26 triangles and `00002307`
+471288.00 over 23, matching an independent memory reader exactly. The two CKPE-declared `BSTArray<uint16>`
+at `0x260`/`0x278` are used by the edit path as u16 sets (search, then insert - `0x140EF1421` and
+`0x140EF13FC`) and measured empty on every loaded master form, so they are neither the triangle storage
+nor a cover count of a loaded mesh. No percentage is computed from any of these numbers.
+
+Generation is dialog-gated, and the pipeline answers the dialog. Posting `NAVMESH/Generation/Recast-Based
+Generation` opens a modal titled `Recast Navmesh Generation` (buttons `OK`, `Cancel`, `Recast Options`,
+`Default Settings`, `Include Landscape`, `Generate Float Navmesh`) and greys the editor frame until it is
+answered; nothing is built while it sits there. So `nav.generate` and the first step of `nav.apply` press
+that dialog's own `OK`, then wait - bounded at 120 s - for the window to disappear, and a dialog that
+never closes stops the sequence with `generation_incomplete` instead of letting finalize race a modal.
+Because the pipe handler runs on the editor's own UI thread, `nav.apply` cannot wait for anything: a `Sleep`
+there froze the editor, so the generation dialog never opened and the call never returned. The sequence is
+therefore a stage machine that keeps its progress between calls and answers `pending` until the last one.
+After the sequence, `nav.apply` re-reads the cell's own arrays and refuses to answer `ok` when neither
+the vertex nor the triangle count moved: that is `no_geometry_change`, and its message names the counts,
+the forms and what the dialog did, because a silent no-op used to read as a successful run.
+
+The pipeline saves on evidence, not on hope. `ck.navmesh mode=apply` posts the three steps, reads the
+CKPE log lines that appeared after them, and computes a verdict: any line naming an error, warning,
+failure or invalid result, or a modal dialog left blocking the editor, makes it `not_clean`, and a
+`not_clean` verdict stops before the save. Only a `clean` verdict posts `File > Save`, and the reply
+carries `verdict.verdict`, the line count it read and the dialog it found, so the reason a cell was or
+was not written is visible rather than assumed. `dry_run=true` is the inspection half: it resolves the
+same four commands through `nav.plan`, reports their paths, ids and enabled state, and posts nothing at
+all, so neither a generation nor a save can happen.
+
+`mode=check` and `mode=apply` answer with `verdict`, not with the log text it was read from. The parser
+matches the editor's own message templates, which is why it names `Navmesh %08x Cell %s, Triangle %u is
+degenerate`, `(Warning %d Unconnected NavMeshes)`, `Potentially overlapping navmesh detected while
+saving Navmesh (%08x) in cell %s` and the rest of that family rather than looking for the word "error" in
+prose. Each finding carries a severity, the navmesh form id when the template names one, a collapsed
+count for repeats, and the line it came from. Cells are grouped by the cell name the template carries, so
+the reply reads `{"verdict":"warnings","cells":[{"cell":"AndrewStation01","errors":0,"warnings":2,...}]}`.
+A check that writes nothing this parser recognises is `unknown`, never `clean`, because silence is not
+evidence; that also means `mode=apply` will not save on such a build, which is the intended failure side.
+
+Creation and application are the editor's own generation commands, not a navmesh writer. The measured
+`NAVMESH` menu carries `Generation/Havok-Based Generation`, `Generation/Recast-Based Generation`,
+`Generation/Advanced`, `Finalize Cell NavMeshes`, `Check NavMeshes`, the precut group, the cover and
+waypoint groups, `Move Selection To Separate NavMesh`, `Remove Cell NavMeshes`, the worldspace finalize
+variants and `Audit Navmesh Report`. `nav.apply` posts the three that make a cell usable — generation,
+finalize, check — in that order and reports each posted id; saving stays a separate `ui.command Save`,
+because a save reaches every file the CK has open. `nav.run` posts any other navmesh caption, which is
+the whole command-level edit surface: precuts, cover clearing, waypoints, removal, separation, audit,
+OBJ export. Inside the cover group only `Clear Cover` and `Clear Generated Cover` change the record;
+`Find Cover Edges`, `Draw Cover` and `Cover Test` are display-only, which identical `nav.state` counts
+before and after each of them show.
+
+The limit is the same one the coverage read runs into: the CK's navmesh edit module is interactive, and
+no header exposes its geometry, so painting or moving individual triangles cannot be automated here.
+Edits stop at the granularity the CK itself gives a command, and the tool description says so.
+
+`NAVMESH/Audit Navmesh Report` is not a verdict channel today, and the tools do not treat it as one. The
+executable names its output: `NavMeshAudit%02u_%02u_(%02u.%02u.%02u).csv`, so the design is a per-cell
+CSV. Posted against a loaded cell it produced nothing at all - no CSV in the game folder, `Data`, `Logs`,
+the user profile or Temp, no new window, no modal, and no navmesh or audit line in the CKPE log. That was
+true for an interior cell and for an exterior cell (grid 5, -11), waiting 15-20 s each time, with the menu
+item enabled throughout. Until a session is observed where it does write, `mode=run command="Audit
+Navmesh Report"` means only that the command was posted.
+
+The workflow is deliberate about what it can prove:
+
+- `nav.commands` walks the whole menu bar and returns every entry whose path mentions navmesh, with the
+  id and whether the editor has it enabled. A repeated caption is only distinguishable there, and an
+  empty list answers "does this build carry the command at all".
+The check's own report is the verdict's only input. The plugin finds it from its own module path
+(`<game>\CKPEPlugins\CKAgent.dll` → `<game>\Logs\CKPE\CreationKitPlatformExtended.log`), remembers the size
+before posting, and reads only what the check appended. A partly written last line is dropped, because a
+fragment of a message would otherwise read as a finding.
+
+- `nav.check` posts the resolved id. A greyed item is refused as `command_disabled` before anything is
+  posted, so the editor's reason is reported instead of a quiet no-op.
+- `nav.finalize` changes the loaded cell's navmesh data, so it is refused without `confirm` — in the
+  plugin as well as in the server, because the server is not the only possible caller.
+
+`tools/navmesh-probe.ps1` asserts the parts that would otherwise fail silently against a live editor:
+that the posted id is the one discovery just reported (not a constant), that the reply names a real
+CKPE log and carries a `report`, that an unconfirmed generate, apply or finalize returns no payload, and
+that a generation strategy or caption this build does not carry is refused by name. It never runs
+generation, finalize or `run`, because those change the loaded cell.
+
+`tools/navmesh-command.test.ps1 -Live` is the real-data pass. It loads `-Cell` (default `DmndRadio01`),
+reads `nav.state`, and fails if any form's `geometry` is none of `read` / `empty` / `unreadable`, if a form
+marked `read` or `empty` reports `null` vertex, triangle or area counts, if an `empty` form reports anything
+but zeros, if the coverage counters disagree with the forms, or if the area total is null while every form
+is readable. With `-Generate` it first posts `nav.generate recast confirm`, answers the dialog through
+`nav.accept` and waits for `navmeshForms` to grow, so the forms it reads are the ones a Recast pass just
+replaced — the exact case that used to answer `null`. Without `-Live` the script is the static pass and
+touches no editor. The live modes themselves live in `tools/navmesh-command.live.ps1`, which the suite
+dot-sources, so each file stays inside the repository's line budget.
+
+A mutating run cleans up after itself: on a cell that carried no navmesh, the forms the run created are
+removed with the editor's own `Remove Cell NavMeshes` command (resolved from the live menu, not hardcoded)
+and `nav.state` is polled until `navmeshForms` is zero, so `-Generate` leaves no generated mesh behind and
+the next run starts from the same state. The evidence says which happened — `restore` is `removed`,
+`already_empty`, `not_needed` (a read-only run) or `not_possible` (the cell carried navmesh before the run,
+and removing it would delete the original rather than restore it); a removal that posts but never empties
+the cell fails the run. A read-only run still requires a cell with navmesh; the mutating modes accept an
+empty cell, because generating into one is what they do.
+
+`-Check` goes one step further and asserts the verdict itself. It drives `ck.navmesh mode=check` through the
+real MCP server with `tools/mcp-call.mjs` (needs `node`, `-McpDll` or a Release build under
+`CKAgent.Mcp\bin`, and `-GamePath` or `CKAGENT_GAME`), then fails when the verdict is `unknown`, when it
+reports warnings or errors but names no finding, when its per-severity totals disagree with the findings it
+named, when a finding carries no message or no source line, or when no finding matches an `-Expect` pattern
+(a regex over each finding's message or its source line). Use it on a cell whose findings are known:
+
+```
+tools/navmesh-command.test.ps1 -Live -Check -Cell DmndRadio01 -Expect 'degenerate','missing a link'
+```
+
+`-Apply` drives a whole staged apply over the pipe, one stage per call, against the loaded cell — so the cell
+must be in the writable active file and its plugin must be loaded, or the run fails naming that. It records
+every stage and its latency and fails when a stage answer exceeds `-StageBudgetMs` (default 2000 ms), which
+is the regression the staging exists for: a stage that waited on the editor thread instead of answering
+`pending` would hold it for its whole deadline. While a stage is pending it also probes `nav.state` and
+requires at least one pending stage to answer within `-ProbeBudgetMs` (default 2000 ms); a slower probe is
+not a failure on its own, because the editor may legitimately be computing during a generation stage, but a
+run where no stage answered a probe at all fails. The run must also observe at least one `pending` answer,
+so a pipeline that finished in a single call cannot pass as responsive. The probe count and slowest times
+land in the evidence as `applySteps` (each stage with its latency), `applyProbeMs`, `applySlowestStageMs`,
+`applyFastProbes`, `applyVerdict` and `applyPluginVerdict`; a finished run that carries no verdict of its own
+fails, because that is what would push the answer back onto the server's parse.
+
+`-Check` likewise compares the verdict the plugin reported with the one the server parsed from the same
+lines (`pluginVerdict` in the evidence) and fails when they disagree, so the two classifiers cannot drift
+apart on real data.
+
+What is not claimed: the reader reports vertices, triangles, measured area and per-edge cover from the
+forms' own arrays, but it never writes geometry and never bakes, and a cell the log says nothing about is
+not thereby proved correct.
 
 ## Camera transform, measured (editor 1.11.246.0, cell open)
 
@@ -639,117 +775,20 @@ The radius is measured from the probe's own translation rather than from the rep
 back equal to the point with `hasPivot: true` — so the focus the editor's own orbit and zoom work from is
 the target, not whatever the previous navigation left behind.
 
-### Orbiting a reference, measured
-
-The pivot can also be a name. `camera orbit Inst305Bulb05 0 0.5` uses the same box centre `ck.frame` frames
-and sizes the radius from the same fit, so the two tools agree on where the object is:
-
-| Call | Pivot | Distance | Camera | `aim` |
-|---|---|---|---|---|
-| `orbit Inst305Bulb05 0 0.5` | `1588.9611, -158.2818, 212.6093` | `62.35` | `1534.2405, -188.1758, 212.6093` | 1.0000 |
-| `orbit 1588.9611 -158.2818 212.6093 62.35 0.5` | same | `62.35` | `1534.2438, -188.1740, 212.6093` | 1.0000 |
-| `orbit Inst305Bulb05 120 0.5` | same | `120.00` | `1483.6511, -215.8129, 212.6093` | 1.0000 |
-| `orbit 1588.9611 -158.2818 212.6093 120 0.5` | same | `120.00` | `1483.6511, -215.8129, 212.6093` | 1.0000 |
-
-The two rows at a given radius agree to the last printed digit; the `62.35` pair differs by three thousandths
-only because the true radius is `25.9814` and `2.4 ×` that is `62.3525`, which the coordinate row has to be
-told. A name the cell does not hold is `ref_not_found` (the message lists some of the 142 it does hold), and
-naming both a reference and `x/y/z` is `invalid_argument` rather than one silently winning.
-
 ### Framing a reference, measured
 
 `ck.frame` finds the object by iterating the loaded cell's own `TESObjectCELL::Items` (`GetItemCount`,
 `GetItems`, `TESObjectREFR::GetPosition`, `GetFormEditorID`, base object via `GetParent`), so nothing is
-assumed about where a reference sits.
+assumed about where a reference sits. It then stands the camera at `target - distance * (cos yaw, sin yaw)`
+at the object's own height and writes the verified `SetPosition` + yaw matrix pair.
 
-It then frames the reference from its own size rather than from a fixed standoff. `TESObjectREFR::GetBoundMin`
-and `GetBoundMax` give the box in the reference's own units, so the centre is the reference position plus the
-middle of the box, and the radius is half the box diagonal. The camera goes `2.4` radii back and `30°` up
-from that centre — `distance = 2.4 × radius`, `camera.z = center.z + distance/2` — so a bulb and a building
-each fill the view instead of sharing one standoff. A degenerate box (zero extent, or not finite) is floored
-at radius `8` and capped at `8192`; an explicit `distance` in the request still wins.
+With `AndrewStation01` loaded (3616 references), on `Loot_Prewar_Safe` (`0023F200` at
+`39.5606, 9492.1836, 272.3472`):
 
-With `DmndRadio01` loaded (142 references):
-
-| Request | Camera | `radius` | `distance` | `aim` |
-|---|---|---|---|---|
-| `frame Inst305Bulb05` | `1534.9611, -158.2818, 243.7863` | `25.98` | `62.35` | `1.0000` |
-| `frame Inst305Bulb05 0 1.5708` | `1588.9613, -212.2818, 243.7863` | `25.98` | `62.35` | `1.0000` |
-| `frame Inst305Bulb05 300` | `1329.1536, -158.2818, 362.6096` | `25.98` | `300.00` | `1.0000` |
-
-Three references in that cell framed at their own scale: `Inst305Bulb05` bounds `[-21, -15, -14, 9, 15, 16]`
-radius `25.98` distance `62.35`, `DefaultLightGreenFungus01NS` radius `20.15` distance `48.36`, and
-`MS14TrailerMarker` radius `27.37` distance `65.68` — the ratio held at `2.4` every time.
-
-The `aim` in that table is measured, not asserted by construction: after posing, `frame` re-reads the scene
-camera's view row and dots it with the direction to the **box centre** it framed, exactly the way `ck.aim`
-measures its own turn, and reports `aligned` (`aim > 0.999`). What it centres is the centre, so `center` and
-`target` in the same reply are not the same point whenever the box is offset from the reference's origin.
-Measured in `AndrewStation01` on `Loot_Prewar_Safe` (`0023F200`, radius `46.96`, position
-`39.5606, 9492.1836, 272.3472`, centre `38.0606, 9490.1836, 302.8472` — `30.60` apart):
-
-| Request | Camera | `distance` | `span` | `aim` | `aligned` |
-|---|---|---|---|---|---|
-| `frame Loot_Prewar_Safe` | `-59.5495, 9490.1836, 359.2026` | `112.71` | `112.71` | `1` | `true` |
-| `frame Loot_Prewar_Safe 0 1.5` | `31.1560, 9392.8184, 359.2026` | `112.71` | `112.71` | `1` | `true` |
-| `frame Loot_Prewar_Safe 300 -2.5` | `246.2037, 9645.6709, 452.8475` | `300.00` | `300.00` | `1` | `true` |
-
-The standoff is always on a circle around the centre, so the aim does not depend on which side is asked for,
-and `span` comes back equal to `distance` every time. Aiming the same camera at the reference's *position*
-instead would put the view row at `0.98138` to the centre — `11°` off — which is why the two points are
-reported separately rather than folded into one `aim`. `tools/aim-probe.ps1` asserts this: reported `aim`
-within tolerance of `1`, `aligned` true, `span` equal to the reported `distance`, and the view row it re-reads
-dotting the framed centre at `1.00004` or better.
-
-The 30° elevation is where `frame` could have the same fault `ck.aim` used to have, with the tilt taken from
-a standoff other than the one the camera ends on. It cannot: the position and the pitch are computed from
-the same distance in one expression, so the camera always lands on the sphere at the requested distance and
-the tilt from the centre to it. The reply's own `aim` cannot show a mistake here — a pose derived from a
-wrong pitch still looks straight at the centre — so the probe measures the two fractions that can, the
-height above the centre and the flat part, both of which are fixed by a 30° tilt:
-
-| Cell | Reference | Centre `z` | Asked | `distance` | Height / `distance` | Flat / `distance` | `pitch` | `aim` |
-|---|---|---|---|---|---|---|---|---|
-| `AndrewStation01` | `Loot_Prewar_Safe` | `302.8` | fit | `112.71` | `0.5000` | `0.8660` | `-0.5236` | `1` |
-| `AndrewStation01` | `Loot_Prewar_Safe` | `302.8` | `64` | `64.00` | `0.5000` | `0.8660` | `-0.5236` | `1` |
-| `AndrewStation01` | `Loot_Prewar_Safe` | `302.8` | `2048` | `2048.00` | `0.5000` | `0.8660` | `-0.5236` | `1` |
-| `DmndRadio01` | `Inst305Bulb05` | `212.6` | fit | `62.35` | `0.5000` | `0.8661` | `-0.5236` | `1` |
-| `DiamondCityOrigin` | `DiamondStandsMayor01` | `742.0` | fit | `7219.18` | `0.5000` | `0.8660` | `-0.5236` | `1` |
-| `DiamondCityOrigin` | `DiamondStandsMayor01` | `742.0` | `5000` | `5000.00` | `0.5000` | `0.8660` | `-0.5236` | `1` |
-| `DiamondCityOrigin` | `DiamondStandsMayor01` | `742.0` | `300` | `300.00` | `0.5000` | `0.8660` | `-0.5236` | `1` |
-
-A bulb whose centre sits at `212.6` and a stadium stand at `742.0` give the same fractions at a standoff of
-`62` and one of `7219`, so the tilt depends on the distance asked for and on nothing left over from an
-earlier pose or an absolute height. The probe frames twice on the same reference — at the fitted distance
-and at half of it — and asserts `0.5` and `cos 30°` on both, which is the only reading that would notice a
-tilt taken from the other standoff.
-
-The second frame asks for a *nearer* standoff rather than a wider one because the reference is looked up in
-whatever cell the camera stands in, and a frame far enough back leaves the cell it was framing: `frame
-DiamondStandsMayor01` at its fitted `7219` centres the stand, while a second frame at `21657` in the same
-cell is refused with `ref_not_found` against `ProceduralWater`, since the camera had moved out into the
-worldspace and the cell under it holds two references. Naming `cell` on the request does not rescue that
-case: the load happens first, and the lookup then follows the moved camera. Half the fitted distance stays
-inside the cell, so it still varies the distance the tilt is taken from.
-
-Framing also fits the lens to the box, because a standoff that clears the object still clips it if the near
-plane sits further out. `ck.frame` writes the near plane at `distance - 1.5 × radius` (floored at `1`) and
-reports `near`, `nearRead`, `far`, `farRead` and `farHeld`:
-
-| Reference | `radius` | `distance` | Near plane | Box front | `far` / `farRead` | `farHeld` |
-|---|---|---|---|---|---|---|
-| `Inst305Bulb05` | `25.98` | `62.35` | `23.3827` | `36.37` | `114.3154` / `300000` | `false` |
-| `MS14TrailerMarker` | `27.37` | `65.68` | `24.6311` | `38.31` | `120.4186` / `300000` | `false` |
-| `DefaultLightGreenFungus01NS` | `20.15` | `48.36` | `18.1345` | `28.21` | `88.6575` / `300000` | `false` |
-
-The near plane sits inside the box's front face in every case, so the framed object is not cut off, and a
-later `mode=lens` read still shows `23.3827` — the fit survives. The far plane it asks for
-(`distance + 2 × radius`) does not: the editor replaces it with its own `300000` every frame, which already
-covers any interior cell, and `farHeld` says so rather than a reply claiming a plane that is gone.
-
-Earlier measurements on `AndrewStation01` used the old fixed standoff and are still reproducible by passing
-it: `frame Loot_Prewar_Safe 256` reaches `-216.4394, 9492.1836, 272.3472`, and
-`frame Loot_Prewar_Safe 512 1.5708` reaches `39.5606, 8980.1836, 272.3472`, both `aim 1.0000`.
+| Request | Camera | Span | `aim` |
+|---|---|---|---|
+| `frame Loot_Prewar_Safe` (256, yaw 0) | `-216.4394, 9492.1836, 272.3472` | 256.00 | 1.0000 |
+| `frame Loot_Prewar_Safe 512 1.5708` | `39.5606, 8980.1836, 272.3472` | 512.00 | 1.0000 |
 
 The `aim` the tool reports is not graded on the matrix it just wrote. It is read from the **scene camera**
 — the `NiCamera` at `camera+0x10`, which the editor copies the node into every frame and which is what
@@ -760,136 +799,6 @@ the same row from outside the process and agrees.
 An unmatched name comes back with candidates from the loaded cell (`no reference in the loaded cell
 matches X among 3616 references; for example: Loot_Prewar_Safe, MS07cCompanionMarker, ...`), because a
 name the caller cannot discover is not a usable tool.
-
-### Interior against a scaled worldspace, measured
-
-`DiamondCityFX` is a worldspace whose contents are scaled, so it is the case where a hidden scale factor
-would break the pose math. It is only reachable after the Cell View's combo is switched to it
-(`ui.select <combo> 4`, see *Reaching an exterior worldspace by name*), and a cell row is then selected
-and double-clicked. Cell `00000FC4` ("Wilderness", grid `0, 0`) is the first one with content.
-
-| | `AndrewStation01` (interior) | `DiamondCityFX` (exterior, grid `0, 0`) |
-|---|---|---|
-| `camera get` `scale` | `1.0000` | `1.0000` |
-| probe `0x70` scale word | `1` | `1` |
-| node rows, yaw 0 | `[[0,-1,0],[1,0,0],[0,0,1]]` | `[[0,-1,0],[1,0,0],[0,0,1]]` |
-| scene rows, yaw 0 | `[[1,0,0],[0,0,1],[0,-1,0]]` | `[[1,0,0],[0,0,1],[0,-1,0]]` |
-| `frame` distance asked / reported | `256` / `256.00` | `512` / `512.00` |
-| `aim` | `1.0000` | `1.0000` |
-| `rotationOffset` | `6.0000` | `6.0000` |
-| `camera-tool-cross-check.ps1` | PASS | PASS |
-
-The same pose gives the same matrices in both worlds, and the camera's world transform carries `scale 1`
-in both, so no world scale reaches the pose math: positions, yaw and standoff distances are plain world
-units. The reported offset is not a scale artefact either — `6.0` is `Σ|R - S|` at an axis-aligned pose,
-and it matches in both worlds because both poses are axis-aligned.
-
-Limits of that finding: `DiamondCityFX`'s cells hold one or two references each (`ProceduralWater` and a
-landscape), so nothing scaled was framed there — only the worldspace's own transform chain was measured. A
-scale applied to geometry or at render time, rather than to the camera's parent, would not appear in any of
-these readings, and the rendered image was not inspected.
-
-Reproduce with `tools/camera-tool-cross-check.ps1` in each world; it reads the pose back through the tool
-and compares the node matrix with the scene camera's, so the numbers do not come from the plugin's own
-decode.
-
-### Per-reference scale in Diamond City, measured
-
-The scale that matters for framing is not the worldspace's: it is carried by each placed reference as
-`XSCL`, which the editor's Cell View does not show (its reference columns are `Editor ID`, `Form ID`,
-`Group`, `Type`, `Ownership`, `Lock Level`, `Loc Ref Type`, `Persist Location`, `Initially Disabled`,
-`Leveled Item`). Reading the cell through a record reader (`fo4editor`'s `get_placed_references`) gives
-`DiamondCityOrigin` in the `DiamondCity` worldspace as 1652 placed references, each with a `scale` field —
-the editor lists 1964 items for the same cell, so the two are not counting the same lists.
-
-Most of that cell is `1.0`, but not all of it: the first references in form-id order include
-`FenceChainlink03` as `00123B:Fallout4.esm` at `scale 1.059999942779541`, beside `00126A:Fallout4.esm`,
-the same base object at `1.0`. So a reference in this worldspace can carry a scale, and what it is depends
-on the reference rather than on the world.
-
-That scale does not reach the box the camera is sized from. Framing both of those references:
-
-| Reference | `scale` | `radius` | `distance` | Centre | `aim` |
-|---|---|---|---|---|---|
-| `0000123B` (`FenceChainlink03`, scaled) | `1.06` | `175.19` | `420.46` | `174.03, 3236.00, -1313.88` | `1` |
-| `0000126A` (`FenceChainlink03`) | `1.0` | `175.19` | `420.46` | `3105.38, 1984.90, -971.12` | `1` |
-
-Same base object, same radius and distance, a `1.06` scale apart. `GetBoundMin`/`GetBoundMax` as the plugin
-reads them are the reference's unscaled box, so `ck.frame` stands the camera as if the object were `1.0`:
-for this pair the true extent is `175.19 × 1.06 = 185.7`, which the camera does not account for. One scaled
-reference is a measurement of this cell, not a survey of the file — the reader returns the cell in one
-payload and was truncated — and the rendered image was not inspected, so the claim is about the bounds the
-tool reads, not about what the editor draws.
-
-### Aiming up and down, measured
-
-`ck.aim` keeps the camera where it stands and turns it until the target sits on the scene camera's view
-row. The pitch is computed from the position the camera ends up at, so a standoff does not tilt at the old
-distance, and a target directly above or below — where there is no yaw to derive — keeps the current
-heading and tilts to the pole instead of refusing. `Loot_Prewar_Safe` at `39.5606, 9492.1836, 272.3472`:
-
-| Camera | Request | Wrote | `aim` |
-|---|---|---|---|
-| `39.5606, 9492.1836, 600` | `aim Loot_Prewar_Safe` | pitch `-1.5708` | 1.0000 |
-| `39.5606, 9492.1836, -100` | `aim Loot_Prewar_Safe` | pitch `1.5708` | 1.0000 |
-| `39.5606, 9292.1836, 0` | `aim Loot_Prewar_Safe 256` | camera `39.5606, 9236.1836, 0`, pitch `0.8163` = `atan2(272.35, 256)` | 1.0000 |
-| `-300, 9200, 0` | `aim Loot_Prewar_Safe` | yaw `0.7105`, pitch `0.5463` | 1.0000 |
-
-Before this, the same standoff reached only `aim 0.8482` (`aligned: false`), because the pitch came from
-the camera's pre-standoff distance, and a target straight overhead was refused with `too_close`. That code
-now means only that the camera is on top of the target, where no direction exists.
-
-The standoff also has a sign, and getting it right in size but backwards still points the camera at the sky.
-Three starts, each `aim Loot_Prewar_Safe 256` from `300, -200` off the target in x/y and the height shown:
-
-| Camera height | Settled distance | `pitch` | Expected | `aim` | View row · target |
-|---|---|---|---|---|---|
-| `+200` (above) | `255.9998` | `-0.6632` | `atan2(-200, 256)` | `1` | `0.99998` |
-| `-200` (below) | `255.9998` | `0.6632` | `atan2(200, 256)` | `1` | `0.99998` |
-| `0` (level) | `255.9998` | `0` | `0` | `1` | `1.00004` |
-
-The settled distance is the same in all three, so the tilt is the only thing that changes, and the view row
-re-read afterwards dots the target in every one. `tools/aim-probe.ps1` asserts all three, including the sign:
-a camera above the target must tilt down, below must tilt up, and level must not tilt at all.
-
-### Holding the horizon, measured
-
-`ck.aim ... level` turns the heading onto the target and refuses the tilt, because some shots want a level
-view more than they want the object dead centre. The reply stays honest about both: `pitch` is `0`, `yawAim`
-is how far the heading reached the target, and `aim` is what a level camera actually sees — the cosine of the
-target's elevation, below `1` whenever the object is not level with the camera. `aligned` means the promise of
-the call was met, so it follows `yawAim` when `level` is set and `aim` otherwise.
-
-`Loot_Prewar_Safe` from `551.5606, 9492.1836` with the camera height shown:
-
-| Camera | Request | `pitch` | View row height | `aim` | `yawAim` | `aligned` |
-|---|---|---|---|---|---|---|
-| `+300` above the target | `aim Loot_Prewar_Safe level` | `0` | `0` | `0.8628` | `1` | `true` |
-| `-300` below it | `aim Loot_Prewar_Safe level` | `0` | `0` | `0.8628` | `1` | `true` |
-| level with it | `aim Loot_Prewar_Safe level` | `0` | `0` | `1` | `1` | `true` |
-| `200` up, `300, -200` off | `aim Loot_Prewar_Safe 256 level` | `0` | `0` | `0.788` | `1` | `true` |
-
-`tools/tilt-compare.ps1` runs the whole aim probe in an interior cell (`AndrewStation01`, `Loot_Prewar_Safe`)
-and in an exterior worldspace (`DiamondCity` / `DiamondCityOrigin`, `DiamondStandsMayor01`), switching the Cell
-View's worldspace entry before the load, and writes one evidence file holding both probes' readings plus a
-`comparison` list that sets the tilted and level answer for each height beside each other. The two kinds of
-world are reached differently, so they were previously measured in separate runs and compared by eye; the file
-fails if a world cannot be prepared, if `level` writes a pitch other than `0` in either, or if the off-height
-cases still report a centred target.
-
-The `aim` in each row is the cosine of the target's elevation — `512/√(512² 300²) = 0.8628` and
-`256/√(256² 200²) = 0.788` — which is what the probe compares it against, so a reply that claimed a centre it
-did not take would fail. The camera did not move in the three in-place cases; the fourth settled at `255.9998`
-with the horizon still flat. Dropping `level` from the same requests tilts them all again (`pitch -0.5300`,
-view row `-0.5055` up, `aim 1`), which is how the four cases were shown to test the flag rather than the tilt.
-
-A chain aims at each reference in the order given, from the position the camera already holds:
-
-| Request | Reply |
-|---|---|
-| `aim MS07cCompanionMarker,DefaultEnableDisableTrigger` | `steps: 2`, step pitches `-0.0897` and `-0.0937` (each its own target's angle), final `aim 1.0000` |
-| `aim Loot_Prewar_Safe,ZZZNoRef` | `ref_not_found`: `step 2 of 2 (ZZZNoRef): …` |
-| `aim Loot_Prewar_Safe,MS07cCompanionMarker 256` | `bad_args`: a chain rotates in place, and a standoff moves the camera |
 
 ### Camera move and lookat, measured
 
@@ -911,103 +820,23 @@ A chain aims at each reference in the order given, from the position the camera 
   the arithmetic above, measured against the node afterwards. The reply names which path aimed the
   camera so the two are never confused.
 
-### Rotating the camera
-
-`mode=rotate` drives the editor's own `BGSRenderWindowCamera::RotateBy`, which takes the steps as drag-like
-units rather than radians: measured, `100` units is `1` radian, `x` is pitch, `y` is roll and `z` is yaw, and
-the camera does not move. That makes it the reference an orbit step can be checked against, and the three
-paths agree exactly at the same pose:
-
-| Path | View row | Reads as |
-|---|---|---|
-| `set ... yaw 0.5` | `0.8776, 0.4794, 0.0000` | yaw `0.5` |
-| `rotate 0 0 50` | `0.8776, 0.4794, 0.0000` | yaw `0.5`, `deltaYaw 0.5`, `moved 0` |
-| `orbit ... angle 0.5` at radius `120` | `0.8776, 0.4794, 0.0000` | `aim 1.0000` |
-
-`rotate 5 0 0` reads `deltaPitch 0.05` and `rotate 0 0.5 0` (roll) leaves yaw and pitch alone while moving the
-matrix by `0.010025`, so the reply reports `matrixDelta` and `changed` from the whole matrix rather than from
-yaw and pitch. A step that leaves the view where it was fails as `rotate_noop`, and a zero step is
-`bad_args`, so a silent no-op cannot be mistaken for a rotation.
-
-### Field of view
-
-The scene camera's frustum holds the tangents of the half-angles, so the field of view is `atan` of them, and
-that is what `mode=lens` reports. Measured on `DmndRadio01` at the default view: `frustum`
-`[-0.83910, 0.83910, 0.53950, -0.53950, 10, 300000]` reads as horizontal `80.0000` and vertical `56.6941`
-degrees. Setting `fov 30` writes `[±0.41675, ±0.26795]` and reads back exactly `30`, `fov 90` reads back
-`90` with horizontal `114.5215`, and `fov 56.6941` restores the default frustum. `zoom 2` halves the field
-of view to `28.3471`, `zoom 0.5` doubles it back to `56.6941`, and a factor of `0`, `-1` or `30` is refused,
-as is a field of view at or outside `1` and `179` degrees.
-
-The reply also carries `near`, `far` and `zoom` as the lens stands: `10` and `300000` at the default view, and
-`zoom` is `56.6941 ÷ fov`, so the default reads `1`, `fov 30` reads `1.8898` and `zoom 2` from `fov 30`
-reads `3.7796` because it lands at `fov 15`. `zoomRequested` keeps the factor that was asked for, so a zoom
-that lands somewhere else is visible in the same reply instead of being assumed.
-
-The far plane belongs to the editor. Writing `114.3154` reads back immediately, but the next `mode=lens`
-read shows `300000` again, with the planes written before the pose or after it — while a written near plane
-(`23.3827`) is still there on that same read. That is why `ck.frame` fits the near plane and reports
-`farHeld` rather than assuming a far plane it set survived.
-
-Two limits are worth stating. The editor's own `Zoom` call is not used: measured with and without a pivot
-set, it left the frustum unchanged, so a zoom here is a field-of-view scale and a factor above `1` zooms
-in. And the linear aspect `(right-left)/(top-bottom)` is preserved, not the angular one, so at `fov 30` the
-horizontal field is `45.2474` rather than the `42.3` that scaling both angles would give. An orthographic
-view is refused with `not_perspective`; that path is implemented but was not exercised, because the render
-window stayed in perspective.
-
 The tool and the probe read different nodes, which is why their matrices are not equal. `camera get`
 reports `rotate` from the camera's own node — the matrix `MoveLocal` moves along, confirmed by
 `camera move 0 256 0` stepping to world `0 -256 0` at that orientation. The probe reads the slave
 `NiCamera` at `camera+0x10`. Measured on 1.11.246.0, the slave's rows are the node's rows shifted by one
 (node `r1, r2, r0`), and the tool's `rotationOffset` is the sum of the differences that shift implies —
 6.0 at the axis-aligned poses first measured, 6.4472 at a diagonal one, so the shift is the invariant and
-the number is not.
-
-`tools/camera-tool-cross-check.ps1` asserts that relation across a sweep rather than at one pose: 11 yaw
-values (0 through 315 degrees) against 5 pitches (-1.0 to 1.0 rad), 55 orientations in all. At each one it
-recomputes the offset from the node rows and the shift and compares it with the number the tool reports,
-checks the view row is node row 1, checks that row carries the requested yaw and pitch, and checks the
-translation both nodes share. Measured over the whole sweep: worst offset error `0.0002`, worst component
-difference between the view row and node row 1 `0`, worst forward error `0.000049`.
-
-`tools/live-evidence.ps1` is the release run: both live probes and the sweep in one pass, one file. They
-need opposite editor states — the modal probe opens `File/Data`, which the editor greys out while a cell is
-open, and the sweep and the aim probe need a cell — so the wrapper sets that state itself rather than trusting
-what it finds: it closes the cell the render window holds (`ui.cellclose`, which clears `BGSRenderWindow+0xF8`,
-re-reading the freed state so a write that never reached the render window cannot pass), runs the probe, then
-closes and loads `-Cell` again so the sweep runs in the cell the evidence names, then the sweep, then the aim
-probe (`-AimCell`, `-AimReference`,
-defaults `AndrewStation01` / `Loot_Prewar_Safe`), which loads its own cell through `ck.frame` and leaves it
-loaded. Running both probes from one command is the point: a release that runs only the probe someone
-remembers is the failure mode this closes. Run from both starting states: with `aaaMarkers` open the wrapper
-closed it itself (`closed: true`, `was aaaMarkers`, `00058955`) before the probe ever ran, then loaded
-`DmndRadio01` for the sweep, and reported `blockedModal: pass`, `cellLoad: exit 0`, `cameraCrossCheck: pass`,
-`aimProbe: pass`, exit `0`; with no cell open, the same run recorded `no cell was open` in both positions and
-passed the same three checks. The probe's own close-and-restore therefore does not appear in either file
-(`blockedModal.evidence.closedCell` is absent), which is the point: the state no longer depends on what the
-probe found. The close is checked rather than assumed: a write that does not reach the render window leaves
-the menu greyed, and the wrapper stops with exit `2` naming the cell it could not free instead of pretending
-`File/Data` is available. `status.loaded` is not the test for that — it reads the TES placement, which stays after a close.
-
-`camera get` reports both matrices, so the difference is visible without a probe. On `DmndRadio01` at yaw 0
-the node rows are `(1,0,0) (0,-0,-1) (0,1,-0)` and `sceneRotate` holds `(0,-0,-1) (0,1,-0) (1,0,0)` — the
-node's rows in the order `r1, r2, r0`, which is what the sweep then checks componentwise at all 55 poses
-(worst difference `0`).
-
-The sweep is what makes the assertion meaningful. A shift that is wrong still predicts `6.0` at an
-axis-aligned pose, so a single pose proves little: with the shift removed the prediction collapses to `0`
-where the tool reports `6.5027`, a comparison against row 0 differs by `1.3276`, and comparing `sceneRotate`
-with the unshifted node rows differs by `1.3276` as well, all rejected. The
-rows print to four decimals, which is why the comparison is componentwise: the dot of `0.6205, 0.6205,
-0.4794` with itself is `0.99986`, not `1`, even though the two rows are identical. It needs the editor and
-the plugin running, so it stays a local check rather than a CI one.
+the number is not. `tools/ck-surface-probe/camera-tool-cross-check.ps1` asserts that
+relation, the rotation offset the tool reports and the translation both nodes share, so a decode error in
+the plugin fails a
+check instead of passing as a plausible pose. It needs the editor and the plugin running, so it stays a
+local check rather than a CI one; `-Pose` replays a saved probe read instead of taking a new one.
 
 The CKAgent repo carries the plugin half of this check as `tools/camera-layout.test.ps1` and runs it from
 `.github/workflows/camera-layout.yml` on every pull request, including two steps that drift the offset and
 the stride on purpose and fail if the test still passes.
 
-`tools/camera-layout.test.ps1` guards this layout. It holds the measured offsets as
+`tools/ck-surface-probe/camera-layout.test.ps1` guards this layout. It holds the measured offsets as
 expected values and fails if the plugin's constants drift from them (world `0x70`, translate
 `world+0x30`, scale `world+0x3C`, stride 4), if the plugin stops addressing columns through the
 stride, or if the probe starts decoding a different row width. With `-Live` it also runs the probe
