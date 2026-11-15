@@ -82,6 +82,12 @@ jobs:
         shell: pwsh
         run: ./tools/navmesh-command.test.ps1 -Evidence navmesh-commands.json
 
+      # The last hand step before a run was a copy into CKPEPlugins, and a stale DLL is the failure that hides:
+      # the editor keeps the old build and every answer looks current.
+      - name: Installing a build places it and names a held plug-in
+        shell: pwsh
+        run: ./tools/install-ckagent.test.ps1
+
       - name: A hard-coded menu id is rejected
         shell: pwsh
         run: |

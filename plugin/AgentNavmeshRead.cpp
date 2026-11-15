@@ -27,6 +27,12 @@ namespace ckagent
 		using EditorCell = CKPE::Fallout4::EditorAPI::Forms::TESObjectCELL;
 		using EditorForm = CKPE::Fallout4::EditorAPI::Forms::TESForm;
 		using EditorNavMesh = CKPE::Fallout4::EditorAPI::Forms::NavMesh;
+		using EditorFormArray = EditorForm::Array;
+
+		// Constraint: the cell's navmesh list is a BSTArray, so its element stride and header size come from the type;
+		// a header change fails this build instead of shortening a list through a stale size field.
+		static_assert(sizeof(void*) == 8, "the cell's navmesh list is an array of 64-bit form pointers");
+		static_assert(sizeof(EditorFormArray) == 0x18, "the cell's navmesh list is a BSTArray of one pointer and two counts");
 
 		// Constraint: a read must stay inside one committed region, so a stale pointer cannot fault the editor.
 		bool Readable(const void* address, std::size_t bytes)
@@ -65,8 +71,8 @@ namespace ckagent
 		constexpr std::uint32_t kNavCoverEdgeShift = 16;
 		// Constraint: an area read must stay bounded, so it stops at 32 MiB of geometry.
 		constexpr std::size_t kMaxNavGeometryBytes = 32u * 1024u * 1024u;
-		// Constraint: the cell's navmesh list is the BSTArray the accessor reads, and its head sits after the item array
-		// at 0x78; the size is only written after the head has been proved to be that same array.
+		// Constraint: the cell's navmesh list head was measured at 0x78, but it is only a candidate: FindNavmeshList proves
+		// any head against the accessors the reply already uses, so a header change is named rather than written through.
 		constexpr std::size_t kCellNavMeshesOffset = 0x78;
 
 		std::string HexId(std::uint32_t id)
@@ -553,6 +559,41 @@ namespace ckagent
 			return true;
 		}
 
+		// Constraint: the list head is discovered and then proved against the accessors, so a header layout change answers
+		// not_found instead of shortening an unrelated structure. The measured offset is only examined first.
+		std::uint8_t* FindNavmeshList(EditorCell* cell, EditorForm** list, std::uint32_t count)
+		{
+			auto* base = reinterpret_cast<std::uint8_t*>(cell);
+
+			auto match = [&](std::size_t at) -> std::uint8_t* {
+				auto* candidate = *reinterpret_cast<std::uint8_t**>(base + at);
+				if (!candidate || !Readable(candidate, sizeof(EditorFormArray))) return nullptr;
+				if (*reinterpret_cast<EditorForm***>(candidate) != list) return nullptr;
+				if (*reinterpret_cast<std::uint32_t*>(candidate + kNavArraySizeOffset) != count) return nullptr;
+
+				const std::uint32_t alloc = *reinterpret_cast<std::uint32_t*>(candidate + kNavArrayAllocOffset);
+				return alloc >= count ? candidate : nullptr;
+			};
+
+			if (std::uint8_t* preferred = match(kCellNavMeshesOffset)) return preferred;
+
+			std::uint8_t* found = nullptr;
+
+			for (std::size_t at = 0; at + sizeof(void*) <= kCellReadable; at += sizeof(void*))
+			{
+				if (at == kCellNavMeshesOffset) continue;
+
+				std::uint8_t* hit = match(at);
+				if (!hit) continue;
+
+				// Constraint: two candidates mean the list is not identified, so nothing is written.
+				if (found) return nullptr;
+				found = hit;
+			}
+
+			return found;
+		}
+
 		// Constraint: a Recast pass leaves the form it replaced in the cell's list with no geometry, so the list is
 		// shortened by id instead of keeping one idle placeholder per apply. A form still carrying geometry is refused.
 		bool PruneCellForms(const void* cell, const std::string& ids, std::string& payload,
@@ -621,68 +662,69 @@ namespace ckagent
 				return false;
 			}
 
-			// Constraint: the size is only written through the array the accessor reads, so a layout change fails the
-			// call instead of shortening some other structure.
-			auto* array = *reinterpret_cast<std::uint8_t**>(reinterpret_cast<std::uint8_t*>(target) + kCellNavMeshesOffset);
-			if (!array || !Readable(array, kNavArraySizeOffset + sizeof(std::uint32_t)) ||
-				*reinterpret_cast<EditorForm***>(array) != list ||
-				*reinterpret_cast<std::uint32_t*>(array + kNavArraySizeOffset) != total)
+			std::uint8_t* head = FindNavmeshList(target, list, total);
+			if (!head)
 			{
-				errorCode = "navmesh_array_unreadable";
-				errorMessage = "the loaded cell's navmesh list is not the array this build reads, so no form was dropped";
+				errorCode = "navmesh_array_not_found";
+				errorMessage = "the loaded cell's navmesh list is not the array its own accessors return, so no form was dropped";
 				return false;
 			}
 
+			auto* array = reinterpret_cast<EditorFormArray*>(head);
+
 			std::string dropped;
 			std::string keptLive;
-			std::uint32_t keep = 0;
+			std::uint32_t index = 0;
+			std::uint32_t removed = 0;
 
-			for (std::uint32_t i = 0; i < total; ++i)
+			// Constraint: Remove compacts and may reallocate, so the list is re-read through the accessor every pass.
+			while (index < target->GetNavMeshesCount())
 			{
-				EditorForm* form = list[i];
-				bool remove = false;
+				EditorForm* form = target->GetNavMeshes()[index];
+				bool selected = false;
 
 				if (form && Readable(form, kNavReadable))
 				{
 					const std::uint32_t id = form->GetFormID();
-					bool selected = false;
 					for (std::uint32_t candidate : wanted) if (candidate == id) selected = true;
-
-					if (selected)
-					{
-						std::uint32_t vertices = 0;
-						std::uint32_t triangles = 0;
-						ReadNavArraySize(form, kNavVerticesOffset, vertices);
-						ReadNavArraySize(form, kNavTrianglesOffset, triangles);
-
-						// Constraint: a form that still carries geometry is the cell's mesh, so naming it is refused, not obeyed.
-						if (vertices || triangles)
-						{
-							if (!keptLive.empty()) keptLive += ",";
-							keptLive += Quote(HexId(id));
-						}
-						else
-						{
-							remove = true;
-							if (!dropped.empty()) dropped += ",";
-							dropped += Quote(HexId(id));
-						}
-					}
 				}
 
-				if (remove) continue;
-				if (keep != i) list[keep] = form;
-				++keep;
-			}
+				if (!selected)
+				{
+					++index;
+					continue;
+				}
 
-			if (keep != total)
-			{
-				for (std::uint32_t i = keep; i < total; ++i) list[i] = nullptr;
-				*reinterpret_cast<std::uint32_t*>(array + kNavArraySizeOffset) = keep;
+				std::uint32_t vertices = 0;
+				std::uint32_t triangles = 0;
+				ReadNavArraySize(form, kNavVerticesOffset, vertices);
+				ReadNavArraySize(form, kNavTrianglesOffset, triangles);
+
+				// Constraint: a form that still carries geometry is the cell's mesh, so naming it is refused, not obeyed.
+				if (vertices || triangles)
+				{
+					if (!keptLive.empty()) keptLive += ",";
+					keptLive += Quote(HexId(form->GetFormID()));
+					++index;
+					continue;
+				}
+
+				if (!dropped.empty()) dropped += ",";
+				dropped += Quote(HexId(form->GetFormID()));
+
+				if (!array->Remove(index))
+				{
+					errorCode = "navmesh_array_not_found";
+					errorMessage = "the loaded cell's navmesh list refused the removal, so no form was dropped";
+					return false;
+				}
+
+				++removed;
 			}
 
 			payload = "{\"pruned\":[" + dropped + "],\"keptLive\":[" + keptLive +
-				"],\"forms\":" + std::to_string(keep) + "}";
+				"],\"removed\":" + std::to_string(removed) +
+				",\"forms\":" + std::to_string(target->GetNavMeshesCount()) + "}";
 			return true;
 		}
 	}

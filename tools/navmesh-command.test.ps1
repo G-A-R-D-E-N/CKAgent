@@ -513,6 +513,26 @@ if ($toolText) {
         $failures.Add('the save is posted before the check verdict is computed, so a failed check could still save')
     }
 
+    # Regression: applying to a named cell needed a separate mode=load first, so one cell took two calls and a
+    # caller that skipped the load ran the pipeline on whatever cell happened to be open.
+    if ($applyCase.Success) {
+        $loadAt = $applyCase.Value.IndexOf('LoadCell(new CellRow(')
+        $postAt = $applyCase.Value.IndexOf('nav.apply ')
+        $observed['applyLoadsNamedCell'] = if ($loadAt -ge 0) { 'found' } else { 'missing' }
+
+        if ($loadAt -lt 0) {
+            $failures.Add('apply never loads the cell it was given, so a named cell still needs a separate mode=load call')
+        } elseif ($postAt -ge 0 -and $postAt -lt $loadAt) {
+            $failures.Add('apply posts its pipeline before it loads the cell it was given, so the run lands on the wrong cell')
+        }
+
+        # Regression: a delivered cell was provable only from the answer, so a second run rebuilt the evidence by hand.
+        $observed['applyWritesEvidence'] = if ($applyCase.Value -match 'WriteEvidence\("apply"') { 'found' } else { 'missing' }
+        if ($applyCase.Value -notmatch 'WriteEvidence\("apply"') {
+            $failures.Add('apply answers without writing its evidence file, so a saved cell has no record of its own')
+        }
+    }
+
     # Regression: apply and check must classify one set of lines, or the same check reads clean in one call and
     # unknown in the other.
     $observed['applyUsesReport'] = if ($applyCase.Success -and $applyCase.Value -match 'ReportLines\(payload\)') { 'found' } else { 'missing' }

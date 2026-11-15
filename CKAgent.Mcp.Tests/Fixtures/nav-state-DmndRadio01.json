@@ -1,0 +1,97 @@
+{
+ "cell": {
+  "editorId": "DmndRadio01",
+  "formId": "00001E45",
+  "interior": true,
+  "grid": null,
+  "references": 142,
+  "landscape": false
+ },
+ "navmesh": {
+  "present": true,
+  "count": 3,
+  "navmeshForms": 3,
+  "parentMismatch": 0,
+  "truncated": false,
+  "forms": [
+   {
+    "formId": "000C6F16",
+    "editorId": "",
+    "type": 76,
+    "navmesh": true,
+    "navmeshId": 814870,
+    "parentCell": "DmndRadio01",
+    "geometry": "empty",
+    "vertices": 0,
+    "triangles": 0,
+    "area": 0,
+    "areaTriangles": 0,
+    "verticesHash": null,
+    "trianglesHash": null,
+    "cover": null
+   },
+   {
+    "formId": "00002307",
+    "editorId": "",
+    "type": 76,
+    "navmesh": true,
+    "navmeshId": 8967,
+    "parentCell": "DmndRadio01",
+    "geometry": "empty",
+    "vertices": 0,
+    "triangles": 0,
+    "area": 0,
+    "areaTriangles": 0,
+    "verticesHash": null,
+    "trianglesHash": null,
+    "cover": null
+   },
+   {
+    "formId": "01001EDC",
+    "editorId": "",
+    "type": 76,
+    "navmesh": true,
+    "navmeshId": 16785116,
+    "parentCell": "DmndRadio01",
+    "geometry": "read",
+    "vertices": 21,
+    "triangles": 14,
+    "area": 42511.44,
+    "areaTriangles": 14,
+    "verticesHash": "8d508bb6b6ccec53",
+    "trianglesHash": "9e98cb180872c4aa",
+    "cover": {
+     "edge01": 5,
+     "edge12": 2,
+     "edge20": 3,
+     "any": 8,
+     "all": 0,
+     "openEdges": 10,
+     "heightSet": 14
+    }
+   }
+  ],
+  "coverage": {
+   "covered": true,
+   "forms": 3,
+   "parentMismatch": 0,
+   "readForms": 1,
+   "emptyForms": 2,
+   "unreadableForms": 0,
+   "vertices": 21,
+   "triangles": 14,
+   "area": 42511.44,
+   "areaTriangles": 14,
+   "edgeCover": {
+    "edge01": 5,
+    "edge12": 2,
+    "edge20": 3,
+    "any": 8,
+    "all": 0,
+    "openEdges": 10,
+    "heightSet": 14
+   },
+   "geometry": "form_arrays"
+  }
+ }
+}

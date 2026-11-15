@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Text.Json;
 
 using Garden.CkAgent;
 
@@ -484,6 +485,138 @@ public sealed class SavePersistTests
         Assert.True(forms[0].HasGeometry);
         Assert.Empty(NavmeshApplyPrune.ReadForms("{\"cell\":{}}"));
         Assert.Empty(NavmeshApplyPrune.ReadForms(null));
+    }
+
+    private static string Fixture(string name) => Path.Combine(AppContext.BaseDirectory, "Fixtures", name);
+
+    /// Regression: the prune's form table was only ever checked against a reply nobody had kept, so a wrong form id,
+    /// count or element stride could have shortened the wrong forms. This reads the saved plugin the live apply wrote
+    /// and the nav.state reply the editor gave for that same cell, and requires both to name the same forms.
+    [Fact]
+    public void TheStateTableAndTheSavedPluginNameTheSameForms()
+    {
+        const uint cell = 0x00001E45;
+        string state = File.ReadAllText(Fixture("nav-state-DmndRadio01.json"));
+
+        NavmeshFileReport saved = NavmeshPersist.Read(Fixture("CKAgentNavE2E.esp"));
+        Assert.Null(saved.Error);
+
+        List<NavmeshRecord> records = saved.Navmeshes.Where(record => record.CellFormId == cell).ToList();
+        Assert.Equal(3, records.Count);
+        Assert.Equal(new uint[] { 0x000C6F16, 0x00002307, 0x01001EDC }, records.Select(record => record.NavmFormId));
+
+        NavmeshRecord mesh = records.Single(record => record.NavmFormId == 0x01001EDC);
+        Assert.Equal(21, mesh.Vertices);
+        Assert.Equal(14, mesh.Triangles);
+        Assert.Equal("8d508bb6b6ccec53", mesh.VertexDigest);
+        Assert.Equal("9e98cb180872c4aa", mesh.TriangleDigest);
+
+        IReadOnlyList<NavmeshFormCount> table = NavmeshApplyPrune.ReadForms(state);
+
+        // The count the state reports and the records the file carries have to be the same three forms.
+        Assert.Equal(records.Count, table.Count);
+        Assert.Equal(records.Select(record => record.NavmFormId), table.Select(form => form.FormId));
+        Assert.Equal(records.Select(record => (record.Vertices, record.Triangles)),
+                     table.Select(form => (form.Vertices, form.Triangles)));
+
+        // The two masters and the one record the run created are told apart by the plugin byte of their id.
+        Assert.Equal(0x00u, table[0].PluginIndex);
+        Assert.Equal(0x00u, table[1].PluginIndex);
+        Assert.Equal(0x01u, table[2].PluginIndex);
+        Assert.False(table[0].HasGeometry);
+        Assert.True(table[2].HasGeometry);
+
+        // The editor's digest and the file's digest cover the same bytes, which is what a wrong stride would break.
+        using JsonDocument document = JsonDocument.Parse(state);
+        JsonElement forms = document.RootElement.GetProperty("navmesh").GetProperty("forms");
+
+        Assert.Equal(table.Count, document.RootElement.GetProperty("navmesh").GetProperty("count").GetInt32());
+        Assert.Equal(mesh.VertexDigest, forms[2].GetProperty("verticesHash").GetString());
+        Assert.Equal(mesh.TriangleDigest, forms[2].GetProperty("trianglesHash").GetString());
+        Assert.Equal(JsonValueKind.Null, forms[0].GetProperty("verticesHash").ValueKind);
+    }
+
+    /// Regression: the second apply in a session left one more empty form beside the mesh. This replays the real
+    /// table through the prune, then the state the next generation produces, and requires exactly one drop.
+    [Fact]
+    public void ThePruneDropsTheFormTheNextGenerationReplaces()
+    {
+        IReadOnlyList<NavmeshFormCount> real =
+            NavmeshApplyPrune.ReadForms(File.ReadAllText(Fixture("nav-state-DmndRadio01.json")));
+
+        // One live mesh and two master records: nothing was replaced yet, so nothing is offered.
+        Assert.Empty(NavmeshApplyPrune.Superseded(real));
+
+        // The next generation empties that mesh and puts the new one in a form of its own.
+        var next = new List<NavmeshFormCount>();
+        foreach (NavmeshFormCount form in real)
+            next.Add(form.HasGeometry ? form with { Vertices = 0, Triangles = 0 } : form);
+        next.Add(new NavmeshFormCount(0x01002A1B, 21, 14));
+
+        IReadOnlyList<NavmeshFormCount> drop = NavmeshApplyPrune.Superseded(next);
+
+        Assert.Single(drop);
+        Assert.Equal(0x01001EDCu, drop[0].FormId);
+        Assert.Equal(3, next.Count - drop.Count);
+        Assert.Equal(new uint[] { 0x000C6F16, 0x00002307, 0x01002A1B },
+                     next.Where(form => form.FormId != drop[0].FormId).Select(form => form.FormId));
+    }
+
+    /// Regression: a delivered cell was provable only from the chat answer, so a second run had to rebuild the
+    /// evidence by hand. An apply that saved writes its own record, and two runs write two records.
+    [Fact]
+    public void ASavedApplyWritesItsOwnEvidenceRecord()
+    {
+        using var install = new TestInstall();
+
+        const uint cell = 0x00001E45;
+        NavmeshExpected expected = NavmeshPersist.Expect(NavmeshPersist.Read(Fixture("CKAgentNavE2E.esp")), cell);
+        NavmeshPersistence persistence = NavmeshPersist.Verify(Fixture("CKAgentNavE2E.esp"), expected);
+        Assert.True(persistence.Persisted);
+
+        string state = File.ReadAllText(Fixture("nav-state-DmndRadio01.json"));
+        NavmeshCheckEvidence check = NavmeshCheckGate.ResolveReport("{\"report\":{\"verdict\":\"clean\",\"errors\":0}}",
+            new[] { "CALL 9 nav.apply recast confirm -> RPLY 9 OK {\"stage\":\"check\"}" },
+            expected, "").Evidence;
+
+        Assert.True(check.Clean);
+
+        string first = NavmeshEvidence.Write(install.Paths, "apply", "DmndRadio01", cell, check, persistence,
+            "{\"ids\":[\"01000001\"],\"posted\":true}", "saved and read back");
+        string second = NavmeshEvidence.Write(install.Paths, "apply", "DmndRadio01", cell, check, persistence,
+            "null", "saved and read back");
+
+        Assert.True(File.Exists(first));
+        Assert.True(File.Exists(second));
+        Assert.NotEqual(first, second);
+        Assert.StartsWith(Path.Combine(install.State, "navmesh"), first);
+
+        using JsonDocument document = JsonDocument.Parse(File.ReadAllText(first));
+        JsonElement root = document.RootElement;
+
+        Assert.Equal("apply", root.GetProperty("mode").GetString());
+        Assert.Equal("DmndRadio01", root.GetProperty("cell").GetString());
+        Assert.Equal("00001E45", root.GetProperty("formId").GetString());
+        Assert.Equal("clean", root.GetProperty("checkCode").GetString());
+        Assert.True(root.GetProperty("silent").GetBoolean());
+        Assert.True(root.GetProperty("persisted").GetBoolean());
+        Assert.Equal("persisted", root.GetProperty("saveCode").GetString());
+        Assert.Equal("01000001", root.GetProperty("pruned")[0].GetString());
+
+        JsonElement written = root.GetProperty("written").EnumerateArray()
+            .Single(entry => entry.GetProperty("formId").GetString() == "01001EDC");
+        Assert.Equal(21, written.GetProperty("vertices").GetInt32());
+        Assert.Equal(14, written.GetProperty("triangles").GetInt32());
+        Assert.Equal("8d508bb6b6ccec53", written.GetProperty("verticesHash").GetString());
+
+        JsonElement fromEditor = root.GetProperty("editor").EnumerateArray()
+            .Single(entry => entry.GetProperty("formId").GetString() == "01001EDC");
+        Assert.Equal("8d508bb6b6ccec53", fromEditor.GetProperty("verticesHash").GetString());
+        Assert.Equal("9e98cb180872c4aa", fromEditor.GetProperty("trianglesHash").GetString());
+
+        // The second record carries no prune, because that run replaced nothing.
+        using JsonDocument quiet = JsonDocument.Parse(File.ReadAllText(second));
+        Assert.Equal(0, quiet.RootElement.GetProperty("pruned").GetArrayLength());
     }
 
     /// The geometry offsets live inside the NVNM subrecord's own data, which starts after the subrecord's

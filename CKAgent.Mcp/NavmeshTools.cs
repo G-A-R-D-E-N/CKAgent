@@ -207,6 +207,13 @@ public sealed partial class NavmeshTools
                     return Refused("mode=apply regenerates, finalises, checks and then saves the loaded cell; " +
                                    "repeat with confirm=true when that is intended, or dry_run=true to see the plan");
 
+                // Constraint: a cell can be named here, so one cell is one call rather than a load and then an apply.
+                string wantedCell = (cell ?? "").Trim();
+                if (wantedCell.Length > 0 &&
+                    !LoadCell(new CellRow(wantedCell, (form_id ?? "").Trim(), "", row), out string loadCode,
+                              out string loadMessage, worldspace))
+                    return new NavmeshResult("error", loadCode, loadMessage, null, _paths.CkpeLogPath, null);
+
                 int rows = max_rows <= 0 ? 40 : Math.Min(max_rows, 500);
                 long offset = LogLength();
 
@@ -266,7 +273,8 @@ public sealed partial class NavmeshTools
 
                 // Constraint: a check that found nothing writes nothing, so a window holding only this tool's own pipe
                 // echo is resolved against the plugin's verdict and the geometry digests the state call reports.
-                NavmeshExpected? checkGeometry = ReadLoadedGeometry();
+                CellNumbers? numbers = ReadLoadedNumbers();
+                NavmeshExpected? checkGeometry = Geometry(numbers);
                 NavmeshCheckEvidence evidence = NavmeshCheckGate.Resolve(reported, verdict, reportLines, parsedClean,
                     checkGeometry, blockedBy);
                 bool mismatch = evidence.Code == "mismatch";
@@ -306,6 +314,9 @@ public sealed partial class NavmeshTools
                     }
                 }
 
+                // Constraint: the record is written before the answer, so a delivered cell always has its evidence on disk.
+                string? evidencePath = WriteEvidence("apply", numbers, evidence, persistence, pruneJson, outcome);
+
                 string envelope = "{\"pipeline\":" + payload + ",\"verdict\":" +
                                   JsonSerializer.Serialize(verdict, EnvelopeJson) +
                                   ",\"check\":" + JsonSerializer.Serialize(new
@@ -318,11 +329,14 @@ public sealed partial class NavmeshTools
                                       geometryRecords = checkGeometry?.Records.Count ?? 0
                                   }) +
                                   ",\"pruned\":" + pruneJson +
+                                  ",\"evidence\":" + (evidencePath is null ? "null" : JsonSerializer.Serialize(evidencePath)) +
                                   ",\"pluginVerdict\":" + (reported is null ? "null" : JsonSerializer.Serialize(reported)) +
                                   ",\"save\":" + saveOutcomeJson +
                                   ",\"persistence\":" + persistenceJson +
                                   ",\"blockedBy\":" + (string.IsNullOrEmpty(blockedBy) ? "null" : JsonSerializer.Serialize(blockedBy)) + "}";
-                return new NavmeshResult("ok", resultCode, outcome, envelope, _paths.CkpeLogPath, null)
+                return new NavmeshResult("ok", resultCode,
+                    evidencePath is null ? outcome : outcome + $"; evidence: {evidencePath}",
+                    envelope, _paths.CkpeLogPath, null)
                 {
                     Verdict = verdict,
                     Persistence = persistence,
@@ -597,19 +611,49 @@ public sealed partial class NavmeshTools
 
     // Constraint: a silent check may only pass when the geometry the save would compare is readable, so the same
     // per-record digests the read-back uses are read from the editor before the gate decides.
-    private NavmeshExpected? ReadLoadedGeometry()
+    // Constraint: the cell's own table is read once, so the check evidence, the prune and the evidence file agree.
+    private CellNumbers? ReadLoadedNumbers()
     {
         if (!BlockedEditor.TryCall(_plugin, "nav.state", out string state, out _, out _)) return null;
 
         try
         {
-            CellNumbers numbers = ReadNumbers(state);
-            if (numbers.Records.Count == 0) return null;
-
-            uint cellId = NavmeshPersist.TryParseFormId(numbers.FormId, out uint parsed) ? parsed : 0;
-            return new NavmeshExpected(cellId, numbers.Records);
+            return ReadNumbers(state);
         }
         catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static NavmeshExpected? Geometry(CellNumbers? numbers)
+    {
+        if (numbers is null || numbers.Records.Count == 0) return null;
+
+        uint cellId = NavmeshPersist.TryParseFormId(numbers.FormId, out uint parsed) ? parsed : 0;
+        return new NavmeshExpected(cellId, numbers.Records);
+    }
+
+    private NavmeshExpected? ReadLoadedGeometry() => Geometry(ReadLoadedNumbers());
+
+    // Constraint: a run that answers the user must leave a record of what it did, so the proof is not the chat itself.
+    private string? WriteEvidence(string mode, CellNumbers? numbers, NavmeshCheckEvidence check,
+                                  NavmeshPersistence? persistence, string? prunedJson, string message)
+    {
+        try
+        {
+            uint cellId = numbers is not null && NavmeshPersist.TryParseFormId(numbers.FormId, out uint parsed)
+                ? parsed
+                : 0;
+
+            return NavmeshEvidence.Write(_paths, mode, numbers?.EditorId ?? "", cellId, check, persistence, prunedJson,
+                message);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
         {
             return null;
         }
