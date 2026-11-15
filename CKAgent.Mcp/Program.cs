@@ -42,6 +42,7 @@ builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogL
 builder.Services.AddSingleton(paths!);
 builder.Services.AddSingleton<CommandStore>();
 builder.Services.AddSingleton<PluginClient>();
+builder.Services.AddSingleton<IPluginCaller>(services => services.GetRequiredService<PluginClient>());
 builder.Services.AddSingleton<SaveCoordinator>();
 builder.Services.AddSingleton<JobRunner>();
 builder.Services.AddMcpServer()

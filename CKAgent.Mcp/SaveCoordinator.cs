@@ -14,6 +14,10 @@ public sealed record SaveOutcome(
     long ElapsedMs,
     uint? CommandId);
 
+/// Invariant: only a save the editor confirmed to disk counts as delivered, so the decision lives here.
+public readonly record struct SaveVerdict(bool Persisted, string Code, string? SavedAtUtc);
+
+
 /// A save must back the plugin up first and then confirm the file actually changed.
 public sealed class SaveCoordinator
 {
@@ -68,7 +72,7 @@ public sealed class SaveCoordinator
                 (IntPtr)command.Id, IntPtr.Zero))
         {
             return Fail("post_failed", $"could not post '{command.Path}' to the editor window",
-                plugin, pluginPath, clock);
+                plugin, pluginPath, clock, backup);
         }
 
         var deadline = TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 5, 600));
@@ -122,6 +126,9 @@ public sealed class SaveCoordinator
         return found;
     }
 
-    private static SaveOutcome Fail(string code, string message, string plugin, string pluginPath, Stopwatch clock) =>
-        new("error", code, message, plugin, pluginPath, null, null, null, clock.ElapsedMilliseconds, null);
+    // Constraint: a backup that was taken is named in the outcome even when the save stopped before posting,
+    // because the caller has to know where the untouched copy is.
+    private static SaveOutcome Fail(string code, string message, string plugin, string pluginPath, Stopwatch clock,
+                              string? backup = null) =>
+        new("error", code, message, plugin, pluginPath, backup, null, null, clock.ElapsedMilliseconds, null);
 }

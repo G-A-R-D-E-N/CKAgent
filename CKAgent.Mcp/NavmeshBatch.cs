@@ -99,6 +99,12 @@ public sealed partial class NavmeshTools
 
     private string lastDialogError = "";
 
+    // Invariant: a mesh still in memory is reported as unfinished, never as a delivered cell.
+    public static SaveVerdict PersistOutcome(SaveOutcome written, DateTime savedAtUtc) =>
+        written.Status == "ok"
+            ? new SaveVerdict(true, "saved", savedAtUtc.ToString("O"))
+            : new SaveVerdict(false, "save_failed", null);
+
     // Constraint: the caller names the file to write, because the editor's Save writes whatever file it has open.
     private SaveOutcome SavePlugin(string plugin, string saveAs, int timeoutSeconds)
     {
@@ -302,7 +308,8 @@ public sealed partial class NavmeshTools
             if (agree && save)
             {
                 SaveOutcome written = SavePlugin(target, saveAs, saveTimeoutSeconds);
-                persisted = written.Status == "ok";
+                SaveVerdict verdict = PersistOutcome(written, DateTime.UtcNow);
+                persisted = verdict.Persisted;
                 saved = new
                 {
                     status = written.Status,
@@ -313,19 +320,19 @@ public sealed partial class NavmeshTools
                     backupPath = written.BackupPath,
                     beforeBytes = written.BeforeBytes,
                     afterBytes = written.AfterBytes,
-                    savedAtUtc = persisted ? DateTime.UtcNow.ToString("O") : null,
+                    savedAtUtc = verdict.SavedAtUtc,
                     elapsedMs = written.ElapsedMs,
                 };
 
                 if (!persisted)
                 {
                     // Constraint: a mesh still in memory is reported as unfinished, never as a delivered cell.
-                    outcomeCode = "save_failed";
+                    outcomeCode = verdict.Code;
                     firstFailure ??= $"{row.CleanId}: {written.Code}: {written.Message}";
                 }
                 else
                 {
-                    outcomeCode = "saved";
+                    outcomeCode = verdict.Code;
                 }
             }
 

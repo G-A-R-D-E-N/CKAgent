@@ -14,7 +14,7 @@ public static class BlockedEditor
     private static bool DismissSkipped =>
         Environment.GetEnvironmentVariable("CKAGENT_TEST_DISMISS_FAILS") == "1";
 
-    public static bool TryCall(PluginClient plugin, string command,
+    public static bool TryCall(IPluginCaller plugin, string command,
         out string payload, out string code, out string message)
     {
         if (plugin.TryCall(command, out payload, out code, out message))
@@ -58,7 +58,7 @@ public static class BlockedEditor
         return false;
     }
 
-    public static string? BlockingTitle(PluginClient plugin)
+    public static string? BlockingTitle(IPluginCaller plugin)
     {
         if (!plugin.TryCall("status", out string status, out _, out _))
             return null;
@@ -68,7 +68,7 @@ public static class BlockedEditor
 
     /// Reads the block from status, then requires the modal list for the dialog's hwnd, because a
     /// dismissal requires a handle.
-    private static string? BlockedBy(PluginClient plugin, out long? handle)
+    private static string? BlockedBy(IPluginCaller plugin, out long? handle)
     {
         handle = null;
 

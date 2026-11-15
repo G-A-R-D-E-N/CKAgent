@@ -26,6 +26,24 @@ jobs:
         shell: pwsh
         run: dotnet build CKAgent.Mcp/CKAgent.Mcp.csproj -c Release
 
+  # The suite drives the pipe seam with canned replies and the save verdict with a throwaway install, so it
+  # runs without an editor. xunit v3 is an executable here because VSTest cannot start a testhost for it.
+  tests:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: The pipe seam, the save verdict and the navmesh check pass
+        shell: pwsh
+        run: |
+          dotnet build CKAgent.Mcp.Tests/CKAgent.Mcp.Tests.csproj -c Release
+          ./CKAgent.Mcp.Tests/bin/Release/net8.0/CKAgent.Mcp.Tests.exe
+
   commands:
     runs-on: windows-latest
 

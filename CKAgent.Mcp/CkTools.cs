@@ -54,10 +54,10 @@ public sealed class CkTools
     private readonly CommandStore _commands;
     private readonly SaveCoordinator _save;
     private readonly JobRunner _jobs;
-    private readonly PluginClient _plugin;
+    private readonly IPluginCaller _plugin;
 
     public CkTools(EditorPaths paths, CommandStore commands, SaveCoordinator save, JobRunner jobs,
-                   PluginClient plugin)
+                   IPluginCaller plugin)
     {
         _paths = paths;
         _commands = commands;
@@ -266,9 +266,9 @@ public sealed record CameraResult(
 [McpServerToolType]
 public sealed class CameraTools
 {
-    private readonly PluginClient _plugin;
+    private readonly IPluginCaller _plugin;
 
-    public CameraTools(PluginClient plugin) => _plugin = plugin;
+    public CameraTools(IPluginCaller plugin) => _plugin = plugin;
 
     [McpServerTool(Name = "ck.frame"),
      Description("Load a cell and put the camera in front of an object, so a reference can be inspected " +
@@ -499,9 +499,9 @@ public sealed record CellResult(
 [McpServerToolType]
 public sealed class CellTools
 {
-    private readonly PluginClient _plugin;
+    private readonly IPluginCaller _plugin;
 
-    public CellTools(PluginClient plugin) => _plugin = plugin;
+    public CellTools(IPluginCaller plugin) => _plugin = plugin;
 
     [McpServerTool(Name = "ck.cells"),
      Description("List the cells in the editor's Cell View as EditorID, FormID, name and row index, " +
@@ -566,9 +566,9 @@ public sealed class UiTools
         "uia.answer", "uia.save",
     };
 
-    private readonly PluginClient _plugin;
+    private readonly IPluginCaller _plugin;
 
-    public UiTools(PluginClient plugin) => _plugin = plugin;
+    public UiTools(IPluginCaller plugin) => _plugin = plugin;
 
     [McpServerTool(Name = "ck.ui"),
      Description("Drive the editor's own controls without the mouse: ui.items reads rows or tree nodes, " +
@@ -602,9 +602,9 @@ public sealed class UiTools
 [McpServerToolType]
 public sealed class ResolveTools
 {
-    private readonly PluginClient _plugin;
+    private readonly IPluginCaller _plugin;
 
-    public ResolveTools(PluginClient plugin) => _plugin = plugin;
+    public ResolveTools(IPluginCaller plugin) => _plugin = plugin;
 
     [McpServerTool(Name = "ck.resolve"),
      Description("Ask the in-process plugin to re-read the render window and its camera once, for when " +

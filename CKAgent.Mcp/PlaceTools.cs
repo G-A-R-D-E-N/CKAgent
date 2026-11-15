@@ -7,9 +7,9 @@ namespace Garden.CkAgent;
 [McpServerToolType]
 public sealed class PlaceTools
 {
-    private readonly PluginClient _plugin;
+    private readonly IPluginCaller _plugin;
 
-    public PlaceTools(PluginClient plugin)
+    public PlaceTools(IPluginCaller plugin)
     {
         _plugin = plugin;
     }

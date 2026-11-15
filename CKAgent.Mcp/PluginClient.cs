@@ -5,7 +5,7 @@ using System.Text;
 namespace Garden.CkAgent;
 
 /// Only the plugin reaches editor internals, so failures must return a code, not an exception.
-public sealed class PluginClient
+public sealed class PluginClient : IPluginCaller
 {
     private const string PipeName = "ckagent";
     private const string HeloPrefix = "HELO ";

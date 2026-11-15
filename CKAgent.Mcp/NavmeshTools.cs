@@ -22,11 +22,11 @@ public sealed partial class NavmeshTools
     private const int LogSettleMs = 1200;
     private const int MaxLineLength = 500;
 
-    private readonly PluginClient _plugin;
+    private readonly IPluginCaller _plugin;
     private readonly EditorPaths _paths;
     private readonly SaveCoordinator _save;
 
-    public NavmeshTools(PluginClient plugin, EditorPaths paths, SaveCoordinator save)
+    public NavmeshTools(IPluginCaller plugin, EditorPaths paths, SaveCoordinator save)
     {
         _plugin = plugin;
         _paths = paths;
