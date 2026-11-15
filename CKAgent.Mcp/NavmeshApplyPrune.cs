@@ -49,6 +49,41 @@ public static class NavmeshApplyPrune
         return prune;
     }
 
+    /// The sentence an apply adds when a form it should have dropped is still there. A stale CKAgent.dll predates
+    /// nav.prune, and a silent skip is what leaves an operator to diagnose the install by hand.
+    public static string Notice(string? prunedJson)
+    {
+        if (string.IsNullOrWhiteSpace(prunedJson) || prunedJson == "null") return "";
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(prunedJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return "";
+
+            if (!document.RootElement.TryGetProperty("ids", out JsonElement ids) ||
+                ids.ValueKind != JsonValueKind.Array || ids.GetArrayLength() == 0)
+                return "";
+
+            if (document.RootElement.TryGetProperty("posted", out JsonElement posted) &&
+                posted.ValueKind == JsonValueKind.True)
+                return "";
+
+            string reply = document.RootElement.TryGetProperty("reply", out JsonElement answer) &&
+                           answer.ValueKind == JsonValueKind.String
+                ? answer.GetString() ?? ""
+                : "";
+
+            if (reply.Length == 0) return "";
+
+            return $"the plugin did not drop {ids.GetArrayLength()} replaced form(s) ({reply}), which means the " +
+                   "installed CKAgent.dll predates nav.prune; reinstall the build with tools/install-ckagent.ps1";
+        }
+        catch (JsonException)
+        {
+            return "";
+        }
+    }
+
     /// nav.state's per-form counts, or an empty list when the reply carries no form table.
     public static IReadOnlyList<NavmeshFormCount> ReadForms(string? statePayload)
     {

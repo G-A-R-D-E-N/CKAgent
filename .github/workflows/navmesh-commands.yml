@@ -88,6 +88,12 @@ jobs:
         shell: pwsh
         run: ./tools/install-ckagent.test.ps1
 
+      # A replaced plug-in only loads after the editor restarts, and the order (prove the loader, stop, start, poll)
+      # is what a stale build hides behind. Stand-in processes let this job run the real stop, start and poll.
+      - name: The restart stops only after the loader is proved and polls for the frame
+        shell: pwsh
+        run: ./tools/editor-restart.test.ps1
+
       - name: A hard-coded menu id is rejected
         shell: pwsh
         run: |

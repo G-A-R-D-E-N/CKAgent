@@ -469,6 +469,25 @@ public sealed class SavePersistTests
         }));
     }
 
+    /// Regression: a stale CKAgent.dll does not know nav.prune, so an apply used to save with the replaced form still
+    /// listed and say nothing about it - leaving the operator to diagnose the install by hand.
+    [Fact]
+    public void AnApplySaysWhenTheInstalledPluginCannotPrune()
+    {
+        string stale = NavmeshApplyPrune.Notice(
+            "{\"ids\":[\"01001EDC\"],\"posted\":false,\"reply\":\"unknown_tool: nav.prune\"}");
+
+        Assert.Contains("predates nav.prune", stale);
+        Assert.Contains("install-ckagent.ps1", stale);
+        Assert.Contains("unknown_tool: nav.prune", stale);
+
+        // A prune that ran, a run that had nothing to drop, and a run whose state read failed are all silent.
+        Assert.Equal("", NavmeshApplyPrune.Notice("{\"ids\":[\"01001EDC\"],\"posted\":true,\"reply\":\"{}\"}"));
+        Assert.Equal("", NavmeshApplyPrune.Notice("{\"ids\":[],\"posted\":false}"));
+        Assert.Equal("", NavmeshApplyPrune.Notice("null"));
+        Assert.Equal("", NavmeshApplyPrune.Notice(null));
+    }
+
     /// Regression: the form table the prune reads comes from nav.state, so a reply without one must offer nothing
     /// rather than guess at ids that are not there.
     [Fact]

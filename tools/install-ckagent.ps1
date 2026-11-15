@@ -85,35 +85,12 @@ $after = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
 if ($after -ne $sourceHash) { throw "$target does not carry the plug-in that was installed ($after, expected $sourceHash)" }
 
 $restarted = $false
+$restart = $null
 
 if ($RestartEditor) {
-    $running = @(Get-Process -Name CreationKit -ErrorAction SilentlyContinue)
-
-    foreach ($editor in $running) {
-        Stop-Process -Id $editor.Id -Force
-    }
-
-    if ($running.Count -gt 0) { Start-Sleep -Seconds 3 }
-
-    Start-Process -FilePath $loader -WorkingDirectory $gameRoot | Out-Null
-
-    $deadline = (Get-Date).AddSeconds($WaitSeconds)
-    $frame = $null
-
-    # Constraint: a started loader is not a loaded plug-in, so the editor frame is waited for instead of assumed.
-    while ((Get-Date) -lt $deadline) {
-        $frame = @(Get-Process -Name CreationKit -ErrorAction SilentlyContinue |
-            Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1)
-
-        if ($frame.Count -gt 0) { break }
-
-        Start-Sleep -Milliseconds 500
-    }
-
-    if ($frame.Count -eq 0) {
-        throw "$loader started but the editor had no window within $WaitSeconds s; wait for it and call ck.status before a navmesh run"
-    }
-
+    # Constraint: the restart order lives in one script, so the install cannot stop the editor by a different rule than
+    # the one editor-restart.ps1 proves in CI.
+    $restart = & (Join-Path $PSScriptRoot 'editor-restart.ps1') -Game $gameRoot -Loader $loader -WaitSeconds $WaitSeconds
     $restarted = $true
 }
 
@@ -126,4 +103,5 @@ if ($RestartEditor) {
     previousSha256 = $before
     restarted = $restarted
     loader = if ($RestartEditor) { $loader } else { $null }
+    restart = $restart
 } | ConvertTo-Json -Compress

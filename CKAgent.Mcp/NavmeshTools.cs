@@ -314,6 +314,11 @@ public sealed partial class NavmeshTools
                     }
                 }
 
+                // Constraint: a prune the plugin could not perform is named here, so a stale install never reads as a
+                // clean run with one extra form behind it.
+                string pruneNotice = NavmeshApplyPrune.Notice(pruneJson);
+                if (pruneNotice.Length > 0) outcome += $"; {pruneNotice}";
+
                 // Constraint: the record is written before the answer, so a delivered cell always has its evidence on disk.
                 string? evidencePath = WriteEvidence("apply", numbers, evidence, persistence, pruneJson, outcome);
 

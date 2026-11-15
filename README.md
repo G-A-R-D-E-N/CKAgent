@@ -171,8 +171,11 @@ serves `\\.\pipe\ckagent` and writes `CKAgent.log` beside CKPE's other plugin lo
 `tools/install-ckagent.ps1 -Game <game> [-PluginDll <file>] [-RestartEditor]` does that copy instead of a hand
 one: it takes the newest built DLL when `-PluginDll` is left out (either `CKAgent.dll` or the CMake output
 `CKAgentPlugin.dll`), proves the copied bytes by hash, names a `CKAgent.dll` the running editor is holding
-(`close CreationKit.exe and retry`) instead of leaving a stale one, and with `-RestartEditor` stops the editor,
-starts `ckpe_loader.exe` and waits for its frame. `tools/install-ckagent.test.ps1` runs all of that in CI.
+(`close CreationKit.exe and retry`) instead of leaving a stale one, and with `-RestartEditor` hands the restart to
+`tools/editor-restart.ps1`, which proves `ckpe_loader.exe` exists, stops the editor, starts the loader and polls for
+the editor frame. `tools/install-ckagent.test.ps1` and `tools/editor-restart.test.ps1` run both in CI, the second
+with stand-in processes performing a real stop, start and frame wait plus the timeout, wrong-process and missing-loader
+cases.
 
 ### 2. The MCP server, `ckagent`
 
