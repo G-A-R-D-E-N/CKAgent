@@ -13,6 +13,8 @@ public sealed record NavmeshResult(
     IReadOnlyList<string>? Report)
 {
     public NavmeshVerdict? Verdict { get; init; }
+
+    public NavmeshPersistence? Persistence { get; init; }
 }
 
 // Constraint: the pass leaves its verdict in the CKPE log, so that is what is read back.
@@ -251,6 +253,8 @@ public sealed partial class NavmeshTools
                 bool clean = verdict.Code == "clean" && !mismatch && string.IsNullOrEmpty(blockedBy);
 
                 string saveOutcomeJson = "null";
+                string persistenceJson = "null";
+                NavmeshPersistence? persistence = null;
                 string outcome;
                 string resultCode;
 
@@ -269,12 +273,38 @@ public sealed partial class NavmeshTools
                 }
                 else
                 {
+                    // Constraint: the editor writes whichever file it has open, so Data is snapshotted first and
+                    // the file that changes is the one read back.
+                    IReadOnlyDictionary<string, (long Length, DateTime Modified)> beforeSave =
+                        NavmeshPersist.Snapshot(_paths.DataDirectory);
+
                     if (BlockedEditor.TryCall(_plugin, "nav.save confirm", out string saved,
                                               out string saveCode, out string saveMessage))
                     {
                         saveOutcomeJson = saved;
-                        outcome = $"{verdict.Summary}, so the cell was saved";
-                        resultCode = "saved";
+
+                        string? written = NavmeshPersist.WaitForChange(beforeSave, _paths.DataDirectory,
+                            Math.Clamp(save_timeout_seconds, 5, 120) * 1000);
+
+                        persistence = written is null
+                            ? NavmeshPersistence.Failed("save_not_written",
+                                "the check was clean and File/Save was posted, but no plugin in Data changed, so " +
+                                "nothing on disk holds this mesh")
+                            : VerifyLoadedCell(written);
+
+                        persistenceJson = JsonSerializer.Serialize(persistence, EnvelopeJson);
+
+                        if (persistence.Persisted)
+                        {
+                            outcome = $"{verdict.Summary}, so the cell was saved and read back: {persistence.Message}";
+                            resultCode = "saved";
+                        }
+                        else
+                        {
+                            outcome = $"{verdict.Summary}, but the cell is not persisted ({persistence.Code}): " +
+                                      $"{persistence.Message}";
+                            resultCode = persistence.Code;
+                        }
                     }
                     else
                     {
@@ -287,10 +317,12 @@ public sealed partial class NavmeshTools
                                   JsonSerializer.Serialize(verdict, EnvelopeJson) +
                                   ",\"pluginVerdict\":" + (reported is null ? "null" : JsonSerializer.Serialize(reported)) +
                                   ",\"save\":" + saveOutcomeJson +
+                                  ",\"persistence\":" + persistenceJson +
                                   ",\"blockedBy\":" + (string.IsNullOrEmpty(blockedBy) ? "null" : JsonSerializer.Serialize(blockedBy)) + "}";
                 return new NavmeshResult("ok", resultCode, outcome, envelope, _paths.CkpeLogPath, null)
                 {
-                    Verdict = verdict
+                    Verdict = verdict,
+                    Persistence = persistence
                 };
             }
 

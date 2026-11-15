@@ -73,6 +73,80 @@ public sealed class SavePersistTests
         Assert.False(NavmeshTools.PersistOutcome(outcome, DateTime.UtcNow).Persisted);
     }
 
+    /// The plugin a real run saved on this machine: Fallout4.esm's DiamondCity cell 0x00240045, written by the
+    /// Creation Kit with four NAVM records, each in a zlib-compressed record the way the kit writes them.
+    private static string SavedPlugin() => Path.Combine(AppContext.BaseDirectory, "Fixtures", "CKGardenNav.esp");
+
+    /// Regression: the save used to count as delivered once the file's bytes changed, which a plugin written
+    /// without the generated mesh satisfies too. The read-back must come from the NAVM geometry the kit wrote.
+    [Fact]
+    public void TheNavmeshSavedIntoThePluginIsReadBackFromItsOwnGeometry()
+    {
+        NavmeshFileReport report = NavmeshPersist.Read(SavedPlugin());
+
+        Assert.Null(report.Error);
+        Assert.Equal(4, report.Records);
+        Assert.All(report.Navmeshes, mesh => Assert.Equal(0x00240045u, mesh.CellFormId));
+        Assert.All(report.Navmeshes, mesh => Assert.Null(mesh.Error));
+        Assert.All(report.Navmeshes, mesh => Assert.True(mesh.Compressed));
+
+        NavmeshRecord[] meshes = report.Navmeshes.OrderBy(mesh => mesh.NavmFormId).ToArray();
+        Assert.Equal(new uint[] { 0x01000FA3, 0x01000FA4, 0x01000FA5, 0x01000FA6 },
+            meshes.Select(mesh => mesh.NavmFormId).ToArray());
+        Assert.Equal(new[] { 242, 113, 79, 21 }, meshes.Select(mesh => mesh.Vertices).ToArray());
+        Assert.Equal(new[] { 289, 127, 91, 22 }, meshes.Select(mesh => mesh.Triangles).ToArray());
+
+        NavmeshPersistence persisted = NavmeshPersist.Verify(SavedPlugin(), new NavmeshExpected(0x00240045, 4, 455, 529));
+
+        Assert.True(persisted.Persisted);
+        Assert.Equal("persisted", persisted.Code);
+        Assert.Equal(45653L, persisted.Bytes!.Value);
+        Assert.NotNull(persisted.ReadBack);
+        Assert.Equal(4, persisted.ReadBack!.Forms);
+        Assert.Equal(455, persisted.ReadBack.Vertices);
+        Assert.Equal(529, persisted.ReadBack.Triangles);
+    }
+
+    /// Regression: a mesh left in memory reads as the file's stale counts, so the comparison has to fail on them
+    /// instead of accepting "the file changed".
+    [Fact]
+    public void AFileWhoseGeometryDiffersFromTheBuildIsNotReportedPersisted()
+    {
+        NavmeshPersistence mismatch = NavmeshPersist.Verify(SavedPlugin(), new NavmeshExpected(0x00240045, 4, 455, 528));
+
+        Assert.False(mismatch.Persisted);
+        Assert.Equal("readback_mismatch", mismatch.Code);
+        Assert.Contains("455 vertices", mismatch.Message);
+        Assert.Equal(528, mismatch.Expected!.Triangles);
+        Assert.Equal(529, mismatch.ReadBack!.Triangles);
+    }
+
+    /// Regression: the editor can be left holding a build for a cell that its Save never wrote, so a plugin
+    /// without that cell's NAVM records must not be reported as persisted.
+    [Fact]
+    public void ACellTheSavedPluginDoesNotCarryIsNotReportedPersisted()
+    {
+        NavmeshPersistence missing = NavmeshPersist.Verify(SavedPlugin(), new NavmeshExpected(0x00172297, 3, 42, 34));
+
+        Assert.False(missing.Persisted);
+        Assert.Equal("cell_missing", missing.Code);
+        Assert.Contains("0x00172297", missing.Message);
+    }
+
+    /// A save the editor never performed must be named as nothing on disk rather than assumed.
+    [Fact]
+    public void APluginThatIsNotOnDiskIsNotReportedPersisted()
+    {
+        string absent = Path.Combine(AppContext.BaseDirectory, "Fixtures", "NotSaved.esp");
+
+        NavmeshPersistence nothing = NavmeshPersist.Verify(absent, new NavmeshExpected(0x00240045, 4, 455, 529));
+
+        Assert.False(nothing.Persisted);
+        Assert.Equal("readback_unavailable", nothing.Code);
+        Assert.Null(nothing.ReadBack);
+        Assert.Empty(NavmeshPersist.Snapshot(Path.Combine(AppContext.BaseDirectory, "no-such-data")));
+    }
+
     /// A throwaway install: the game directory only has to hold CreationKit.exe and Data for EditorPaths, so the
     /// save path can be driven without a real editor.
     private sealed class TestInstall : IDisposable

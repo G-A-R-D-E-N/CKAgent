@@ -10,7 +10,31 @@ on:
   workflow_dispatch:
 
 jobs:
-  # The plugin cannot build here (CKPE is a full MSVC build of its own), but the server can, and it is
+  # Nothing else compiles the C++ plugin, and a wrong editor call is a crash in the editor rather than a failed
+  # test. CKPE's own DLL build is a separate MSVC solution, so every plugin source is compiled against the public
+  # CKPE headers here; linking the DLL still needs a built CKPE, which the editor machine has.
+  plugin:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The CKPE headers the plugin includes
+        shell: pwsh
+        run: |
+          git clone --depth 1 --no-tags https://github.com/Perchik71/Creation-Kit-Platform-Extended.git ckpe
+          if ($LASTEXITCODE -ne 0) { throw 'CKPE could not be fetched' }
+
+      - name: The plugin compiles
+        shell: pwsh
+        run: |
+          cmake -S plugin -B build/plugin -G "Visual Studio 17 2022" -A x64 `
+            -DCKPE_ROOT="${{ github.workspace }}/ckpe" -DCKAGENT_COMPILE_ONLY=ON
+          if ($LASTEXITCODE -ne 0) { throw 'the plugin did not configure' }
+          cmake --build build/plugin --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'the plugin did not compile' }
+
+  # The plugin cannot be linked here (CKPE is a full MSVC build of its own), but the server can, and it is
   # the only compile check the new tool gets before it reaches the editor machine.
   server:
     runs-on: windows-latest

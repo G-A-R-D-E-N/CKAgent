@@ -3,13 +3,17 @@ cmake_minimum_required(VERSION 3.25)
 project(CKAgentPlugin LANGUAGES CXX)
 
 # CKPE cannot be built on the CI host yet: its own solution is a full MSVC build with
-# dependencies of its own. Point CKPE_ROOT at a built CKPE checkout instead, so this
-# project fails loudly with an actionable message rather than half-configuring.
+# dependencies of its own. Point CKPE_ROOT at a CKPE checkout instead, so this project
+# fails loudly with an actionable message rather than half-configuring.
 #
 #   cmake -S CKAgent/plugin -B build/ckagent -G Ninja ^
-#         -DCKPE_ROOT=<path to a built Creation-Kit-Platform-Extended checkout>
+#         -DCKPE_ROOT=<path to a Creation-Kit-Platform-Extended checkout>
 #
-set(CKPE_ROOT "" CACHE PATH "Built CKPE checkout (contains CKPE/, x64/)")
+# A compile-only configure proves every plugin source still compiles against the CKPE headers and needs no
+# built CKPE, which is what the workflow does; linking the DLL needs the import libraries CKPE's own build
+# produces in <CKPE_ROOT>/x64.
+set(CKPE_ROOT "" CACHE PATH "CKPE checkout (contains CKPE/, and x64/ when it has been built)")
+option(CKAGENT_COMPILE_ONLY "Compile the plugin sources without linking against a built CKPE" OFF)
 
 if(NOT MSVC)
   message(FATAL_ERROR "CKAgentPlugin builds with MSVC x64 only")
@@ -17,20 +21,22 @@ endif()
 
 if(NOT CKPE_ROOT)
   message(FATAL_ERROR
-    "CKPE_ROOT is not set. Build Creation-Kit-Platform-Extended first, then configure with "
-    "-DCKPE_ROOT=<checkout>. The plugin links CKPE.lib, CKPE.Common.lib and CKPE.PluginAPI.lib "
-    "from <CKPE_ROOT>/x64.")
+    "CKPE_ROOT is not set. Point it at a Creation-Kit-Platform-Extended checkout: the headers are enough for "
+    "-DCKAGENT_COMPILE_ONLY=ON, and a full build also needs CKPE.lib, CKPE.Common.lib and CKPE.PluginAPI.lib "
+    "in <CKPE_ROOT>/x64.")
 endif()
 
 set(CKPE_LIB_DIR "${CKPE_ROOT}/x64" CACHE PATH "Directory holding the CKPE import libraries")
 
-foreach(lib CKPE CKPE.Common CKPE.PluginAPI)
-  if(NOT EXISTS "${CKPE_LIB_DIR}/${lib}.lib")
-    message(FATAL_ERROR "Missing ${CKPE_LIB_DIR}/${lib}.lib — build CKPE (x64) before this project")
-  endif()
-endforeach()
+if(NOT CKAGENT_COMPILE_ONLY)
+  foreach(lib CKPE CKPE.Common CKPE.PluginAPI)
+    if(NOT EXISTS "${CKPE_LIB_DIR}/${lib}.lib")
+      message(FATAL_ERROR "Missing ${CKPE_LIB_DIR}/${lib}.lib — build CKPE (x64) before this project")
+    endif()
+  endforeach()
+endif()
 
-add_library(CKAgentPlugin SHARED
+set(CKAGENT_PLUGIN_SOURCES
   dllmain.cpp
   Agent.cpp
   AgentUi.cpp
@@ -45,6 +51,12 @@ add_library(CKAgentPlugin SHARED
   AgentPlace.cpp
   AgentWire.cpp
 )
+
+if(CKAGENT_COMPILE_ONLY)
+  add_library(CKAgentPlugin OBJECT ${CKAGENT_PLUGIN_SOURCES})
+else()
+  add_library(CKAgentPlugin SHARED ${CKAGENT_PLUGIN_SOURCES})
+endif()
 
 target_include_directories(CKAgentPlugin PRIVATE
   "${CKPE_ROOT}/CKPE/Include"
@@ -61,22 +73,24 @@ target_compile_definitions(CKAgentPlugin PRIVATE
   NOMINMAX
 )
 
-target_link_libraries(CKAgentPlugin PRIVATE
-  "${CKPE_LIB_DIR}/CKPE.lib"
-  "${CKPE_LIB_DIR}/CKPE.Common.lib"
-  "${CKPE_LIB_DIR}/CKPE.PluginAPI.lib"
-  UIAutomationCore.lib
-)
+if(NOT CKAGENT_COMPILE_ONLY)
+  target_link_libraries(CKAgentPlugin PRIVATE
+    "${CKPE_LIB_DIR}/CKPE.lib"
+    "${CKPE_LIB_DIR}/CKPE.Common.lib"
+    "${CKPE_LIB_DIR}/CKPE.PluginAPI.lib"
+    UIAutomationCore.lib
+  )
 
-set_target_properties(CKAgentPlugin PROPERTIES
-  PREFIX ""
-  SUFFIX ".dll"
-  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
-)
+  set_target_properties(CKAgentPlugin PROPERTIES
+    PREFIX ""
+    SUFFIX ".dll"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+  )
+endif()
 
 # CKPE loads plugins from <GAMEDIR>\CKPEPlugins\.
 set(CKPE_PLUGIN_DIR "" CACHE PATH "Optional: copy the built plugin here (…\\Fallout 4\\CKPEPlugins)")
-if(CKPE_PLUGIN_DIR)
+if(CKPE_PLUGIN_DIR AND NOT CKAGENT_COMPILE_ONLY)
   add_custom_command(TARGET CKAgentPlugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CKPE_PLUGIN_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

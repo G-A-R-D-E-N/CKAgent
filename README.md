@@ -46,7 +46,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | Precombine / previs | `███████████████░░░░░` 75% | start headless generation jobs, follow exit code, artifacts and captured editor warnings, tail the console | verifying the result visually; per-cell regeneration; diagnosing what a pass skipped |
 | Diagnostics and recovery | `████████████████░░░░` 80% | report build, process, window, loaded cell and the hidden dialog blocking the editor; re-resolve stale anchors; reveal and retry around a blocking modal | crash triage; log correlation; restarting the editor on demand |
 | **Record editing** | `██░░░░░░░░░░░░░░░░░░` 10% | browse what the Object Window lists; open a record's dialog | creating, editing or saving any record field; conflict handling; copy-as-override |
-| **Navmesh** | `██████░░░░░░░░░░░░░░` 30% | create and apply the loaded cell's navmesh through the editor's own commands (generate, finalize, check) and save the cell only when the check reported no failure, with a dry run that posts nothing; run any named navmesh command for command-level edits; report presence, each form's real vertex and triangle counts and the area those triangles measure; answer the check with a per-cell verdict (cells, errors, warnings) instead of raw log lines | cover coverage, painting or moving individual triangles, per-triangle reads beyond what area needs; reading or writing a NAVM payload |
+| **Navmesh** | `██████░░░░░░░░░░░░░░` 30% | create and apply the loaded cell's navmesh through the editor's own commands (generate, finalize, check) and save the cell only when the check reported no failure, with a dry run that posts nothing; run any named navmesh command for command-level edits; report presence, each form's real vertex and triangle counts and the area those triangles measure; answer the check with a per-cell verdict (cells, errors, warnings) instead of raw log lines; verify a save by reading the `NAVM` records back out of the written plugin and comparing their forms, vertices and triangles with what the editor just built, so only a mesh that reached disk is called delivered | cover coverage, painting or moving individual triangles, per-triangle reads beyond what area needs; writing a NAVM payload, or comparing triangle payloads and the mesh grid on read-back |
 | **Papyrus / scripting** | `░░░░░░░░░░░░░░░░░░░░` 0% | — | attaching scripts, editing properties, compiling, reading VM state |
 | **Assets** (mesh, texture, material) | `█░░░░░░░░░░░░░░░░░░░` 5% | list assets in the Object Window tree | previews, importing, replacing paths, material editing |
 | **Landscape, weather, lighting** | `░░░░░░░░░░░░░░░░░░░░` 0% | — | terrain editing, region painting, weather and lighting preview, LOD |
@@ -76,7 +76,7 @@ is not, and one block is 5%. A 90% row means "an agent can finish this end to en
 | `ck.cell` | which cell the render window holds, as EditorID and form id, so a load is confirmed rather than assumed |
 | `ck.ui` | passthrough to the in-process control tools below |
 | `ck.resolve` | re-read the render window and camera once, for when anchors go stale after a load |
-| `ck.navmesh` | `apply` does the job in one call (generation, then Finalize Cell NavMeshes, then Check NavMeshes), saves with File/Save only after a check that reported no failure, and answers `dry_run=true` with the resolved plan instead of posting; `generate`, `finalize`, `check` run one step; `run` executes a named navmesh command for edits (precuts, covers, waypoints, remove, separate, audit, OBJ export); `state` reports presence and each form's vertex and triangle counts (`geometry` = `form_arrays`); `commands` lists the live menu; every mutating mode needs `confirm`, and `check`/`apply` answer with a per-cell verdict parsed from the check's log |
+| `ck.navmesh` | `apply` does the job in one call (generation, then Finalize Cell NavMeshes, then Check NavMeshes), saves with File/Save only after a check that reported no failure, and answers `dry_run=true` with the resolved plan instead of posting; `generate`, `finalize`, `check` run one step; `run` executes a named navmesh command for edits (precuts, covers, waypoints, remove, separate, audit, OBJ export); `state` reports presence and each form's vertex and triangle counts (`geometry` = `form_arrays`); `commands` lists the live menu; every mutating mode needs `confirm`, and `check`/`apply` answer with a per-cell verdict parsed from the check's log; a save is verified by reading the written plugin's `NAVM` records back and comparing them with the counts the editor reported, so `saved` means the mesh is on disk |
 
 ### Inside the plugin
 
@@ -238,7 +238,10 @@ that the code failed, and the dialog is always dismissed with Cancel so the load
 `.github/workflows/navmesh-commands.yml` runs `tools/navmesh-command.test.ps1`, which fails when a
 navmesh menu id is hard-coded (an id belongs to one editor build), when `nav.finalize` stops comparing
 the caller's answer to `confirm`, or when the plugin stops being built and dispatched. Two drift steps
-insert a pinned id and remove the confirmation, and fail if the gate still passes.
+insert a pinned id and remove the confirmation, and fail if the gate still passes. The same workflow's
+`plugin` job compiles every plugin source against the public CKPE headers, which is the only compile check the
+C++ side gets before it reaches the editor machine, and the suite's persistence test parses the saved
+`CKGardenNav.esp` fixture and asserts the `NAVM` read-back matches the geometry a run generated.
 
 `tools/navmesh-probe.ps1` is the live half of the navmesh checks: it asserts that `mode=state` names the
 same cell the plugin reports and counts a non-zero number of vertices and triangles per navmesh form,

@@ -23,4 +23,9 @@
     <ProjectReference Include="..\CKAgent.Mcp\CKAgent.Mcp.csproj" />
   </ItemGroup>
 
+  <!-- A plugin a real run saved, so the read-back is tested against NAVM records the Creation Kit wrote. -->
+  <ItemGroup>
+    <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

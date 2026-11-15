@@ -144,6 +144,46 @@ public sealed partial class NavmeshTools
             Number(coverage, "triangles"));
     }
 
+    /// Constraint: the read-back is what makes a save mean something, so it compares the file's own NAVM geometry
+    /// with the counts the editor just reported for the loaded cell.
+    private static NavmeshPersistence VerifySaved(string? pluginPath, string cellFormId, CellNumbers state)
+    {
+        if (string.IsNullOrEmpty(pluginPath))
+            return NavmeshPersistence.Failed("readback_unavailable", "the save named no plugin file to read back");
+
+        if (!NavmeshPersist.TryParseFormId(cellFormId, out uint formId))
+        {
+            return NavmeshPersistence.Failed("readback_unavailable",
+                $"the cell reported '{cellFormId}', which is not a form id, so its records cannot be located",
+                pluginPath);
+        }
+
+        return NavmeshPersist.Verify(pluginPath, new NavmeshExpected(formId, state.Forms, state.Vertices, state.Triangles));
+    }
+
+    /// Constraint: the comparison is against what the editor still holds, read after the save, so a build the
+    /// editor never finished cannot be compared against a file that never received it.
+    private NavmeshPersistence VerifyLoadedCell(string pluginPath)
+    {
+        if (!BlockedEditor.TryCall(_plugin, "nav.state", out string stateText, out string stateCode,
+                                   out string stateMessage))
+        {
+            return NavmeshPersistence.Failed("readback_unavailable",
+                $"nav.state did not answer after the save ({stateCode}): {stateMessage}", pluginPath);
+        }
+
+        try
+        {
+            CellNumbers numbers = ReadNumbers(stateText);
+            return VerifySaved(pluginPath, numbers.FormId, numbers);
+        }
+        catch (JsonException)
+        {
+            return NavmeshPersistence.Failed("readback_unreadable",
+                "nav.state answered without the cell geometry this read-back compares", pluginPath);
+        }
+    }
+
     // Constraint: a generated mesh that is not written to a plugin is not delivered, so the batch saves by default.
     private NavmeshResult MeshBatch(string filter, string after, int limit, int waitSeconds, bool dryRun,
                                    bool save, string plugin, string saveAs, int saveTimeoutSeconds)
@@ -303,13 +343,13 @@ public sealed partial class NavmeshTools
                          state.Vertices > 0 && state.Triangles > 0;
             string outcomeCode = agree ? "meshed" : "disagree";
             object? saved = null;
+            object? persistence = null;
             bool persisted = false;
 
             if (agree && save)
             {
                 SaveOutcome written = SavePlugin(target, saveAs, saveTimeoutSeconds);
                 SaveVerdict verdict = PersistOutcome(written, DateTime.UtcNow);
-                persisted = verdict.Persisted;
                 saved = new
                 {
                     status = written.Status,
@@ -324,15 +364,32 @@ public sealed partial class NavmeshTools
                     elapsedMs = written.ElapsedMs,
                 };
 
+                // Constraint: the bytes changing only proves the editor touched a file, so the mesh is read
+                // back out of it before the cell is called delivered.
+                NavmeshPersistence check = verdict.Persisted
+                    ? VerifySaved(written.PluginPath, loaded.FormId, state)
+                    : NavmeshPersistence.Failed(verdict.Code, written.Message, written.PluginPath, written.AfterBytes);
+                persisted = check.Persisted;
+                persistence = new
+                {
+                    persisted = check.Persisted,
+                    code = check.Code,
+                    message = check.Message,
+                    pluginPath = check.PluginPath,
+                    bytes = check.Bytes,
+                    expected = check.Expected,
+                    readBack = check.ReadBack,
+                };
+
                 if (!persisted)
                 {
                     // Constraint: a mesh still in memory is reported as unfinished, never as a delivered cell.
-                    outcomeCode = verdict.Code;
-                    firstFailure ??= $"{row.CleanId}: {written.Code}: {written.Message}";
+                    outcomeCode = check.Code;
+                    firstFailure ??= $"{row.CleanId}: {check.Code}: {check.Message}";
                 }
                 else
                 {
-                    outcomeCode = verdict.Code;
+                    outcomeCode = "persisted";
                 }
             }
 
@@ -349,6 +406,7 @@ public sealed partial class NavmeshTools
                 code = outcomeCode,
                 persisted,
                 save = saved,
+                persistence,
                 strip,
                 before = new { forms = loaded.Forms, vertices = loaded.Vertices, triangles = loaded.Triangles },
                 generate = generated.Payload,
