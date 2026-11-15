@@ -275,6 +275,109 @@ public sealed class SavePersistTests
         }
     }
 
+    /// Regression: the kit's Check NavMeshes writes nothing for a cell with no findings, so the report window held
+    /// only this tool's CALL/RPLY lines and every clean apply was refused as verdict_mismatch. A silent report is a
+    /// clean signal only when the plugin's own verdict agrees and the geometry digests the save compares exist.
+    [Fact]
+    public void ASilentCheckReportIsAcceptedOnlyWithThePluginVerdictAndGeometryDigests()
+    {
+        string[] wire =
+        {
+            "CALL 5 nav.apply recast confirm -> RPLY 5 OK {\"stage\":\"check\",\"pending\":true}",
+            "CALL 6 nav.apply recast confirm -> RPLY 6 OK {\"stage\":\"check\",\"pending\":true}",
+        };
+
+        NavmeshVerdict silent = NavmeshVerdictParser.Parse(wire);
+        Assert.Equal("unknown", silent.Code);
+
+        NavmeshExpected geometry = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+
+        NavmeshCheckEvidence accepted = NavmeshCheckGate.Resolve("clean", silent, wire, false, geometry, "");
+        Assert.True(accepted.Clean);
+        Assert.Equal("clean", accepted.Code);
+        Assert.True(accepted.Silent);
+        Assert.True(accepted.Corroborated);
+        Assert.Contains("no findings", accepted.Reason);
+
+        NavmeshCheckEvidence uncorroborated = NavmeshCheckGate.Resolve("clean", silent, wire, false, null, "");
+        Assert.False(uncorroborated.Clean);
+        Assert.Equal("unknown", uncorroborated.Code);
+        Assert.Contains("corroborate", uncorroborated.Reason);
+
+        NavmeshCheckEvidence noReport = NavmeshCheckGate.Resolve(null, silent, wire, false, geometry, "");
+        Assert.False(noReport.Clean);
+        Assert.Equal("unknown", noReport.Code);
+    }
+
+    /// The silence resolution must not swallow a check that did report a finding.
+    [Fact]
+    public void ACheckReportWithAnErrorIsStillRefused()
+    {
+        string[] reported =
+        {
+            "Navmesh 01001740 Cell DmndRadio01, Triangle 3 is degenerate and has an invalid area",
+        };
+
+        NavmeshVerdict dirty = NavmeshVerdictParser.Parse(reported);
+        Assert.Equal("errors", dirty.Code);
+
+        NavmeshExpected geometry = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+
+        NavmeshCheckEvidence refused = NavmeshCheckGate.Resolve("errors", dirty, reported, false, geometry, "");
+        Assert.False(refused.Clean);
+        Assert.Equal("dirty", refused.Code);
+        Assert.False(refused.Silent);
+    }
+
+    /// A plugin that calls a cell clean while the report carries an error is the mismatch the gate exists for.
+    [Fact]
+    public void APluginVerdictThatDisagreesWithTheParsedReportIsStillRefused()
+    {
+        string[] reported =
+        {
+            "Navmesh 01001740 Cell DmndRadio01, Triangle 3 is degenerate and has an invalid area",
+        };
+
+        NavmeshVerdict dirty = NavmeshVerdictParser.Parse(reported);
+        NavmeshExpected geometry = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+
+        NavmeshCheckEvidence mismatch = NavmeshCheckGate.Resolve("clean", dirty, reported, false, geometry, "");
+        Assert.False(mismatch.Clean);
+        Assert.Equal("mismatch", mismatch.Code);
+        Assert.Contains("clean", mismatch.Reason);
+    }
+
+    /// An accepted silent check still has to survive the read-back: a save whose file differs is never `saved`.
+    [Fact]
+    public void ADigestMismatchAfterASilentCleanCheckIsStillRefused()
+    {
+        string[] wire = { "CALL 6 nav.apply recast confirm -> RPLY 6 OK {\"stage\":\"check\"}" };
+        NavmeshVerdict silent = NavmeshVerdictParser.Parse(wire);
+        NavmeshExpected geometry = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+
+        NavmeshCheckEvidence accepted = NavmeshCheckGate.Resolve("clean", silent, wire, false, geometry, "");
+        Assert.True(accepted.Clean);
+
+        string tampered = Tamper(0x01000FA4, payload =>
+        {
+            int vertexAt = VertexAt(payload);
+            float x = BitConverter.ToSingle(payload, vertexAt);
+            BitConverter.GetBytes(x + 0.25f).CopyTo(payload, vertexAt);
+        });
+
+        try
+        {
+            NavmeshPersistence readBack = NavmeshPersist.Verify(tampered, geometry);
+            Assert.False(readBack.Persisted);
+            Assert.Equal("vertex_mismatch", readBack.Code);
+            Assert.Contains("0x01000FA4", readBack.Message);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(tampered)!, true);
+        }
+    }
+
     /// The geometry offsets live inside the NVNM subrecord's own data, which starts after the subrecord's
     /// six-byte signature and length, so a tamper measured from the record header would rewrite the wrong bytes.
     private static int NvnmAt(byte[] payload)

@@ -247,10 +247,18 @@ public sealed partial class NavmeshTools
 
                 // Constraint: the plugin reports its own verdict, so apply does not rest on a log re-parse alone.
                 string? reported = PluginVerdict(payload);
-                NavmeshVerdict verdict = NavmeshVerdictParser.Parse(ReportLines(payload) ?? ReadAll(offset));
+                IReadOnlyList<string> reportLines = ReportLines(payload) ?? ReadAll(offset);
+                NavmeshVerdict verdict = NavmeshVerdictParser.Parse(reportLines);
                 string? blockedBy = BlockedEditor.BlockingTitle(_plugin);
-                bool mismatch = reported is not null && !string.Equals(reported, verdict.Code, StringComparison.OrdinalIgnoreCase);
-                bool clean = verdict.Code == "clean" && !mismatch && string.IsNullOrEmpty(blockedBy);
+                bool parsedClean = verdict.Code == "clean";
+
+                // Constraint: a check that found nothing writes nothing, so a window holding only this tool's own pipe
+                // echo is resolved against the plugin's verdict and the geometry digests the state call reports.
+                NavmeshExpected? checkGeometry = ReadLoadedGeometry();
+                NavmeshCheckEvidence evidence = NavmeshCheckGate.Resolve(reported, verdict, reportLines, parsedClean,
+                    checkGeometry, blockedBy);
+                bool mismatch = evidence.Code == "mismatch";
+                bool clean = evidence.Clean;
 
                 string saveOutcomeJson = "null";
                 string persistenceJson = "null";
@@ -260,15 +268,12 @@ public sealed partial class NavmeshTools
 
                 if (mismatch)
                 {
-                    outcome = $"the plugin's own check reported '{reported}' while the parsed report says " +
-                              $"'{verdict.Code}'; the cell was not saved";
+                    outcome = $"{evidence.Reason}; the cell was not saved";
                     resultCode = "verdict_mismatch";
                 }
                 else if (!clean)
                 {
-                    outcome = string.IsNullOrEmpty(blockedBy)
-                        ? $"{verdict.Summary}; the cell was not saved"
-                        : $"the editor was left blocked by \"{blockedBy}\", so the cell was not saved ({verdict.Summary})";
+                    outcome = $"{evidence.Reason}; the cell was not saved";
                     resultCode = "not_clean";
                 }
                 else
@@ -278,12 +283,12 @@ public sealed partial class NavmeshTools
 
                     if (persistence.Persisted)
                     {
-                        outcome = $"{verdict.Summary}, so the cell was saved and read back: {persistence.Message}";
+                        outcome = $"{evidence.Reason}, so the cell was saved and read back: {persistence.Message}";
                         resultCode = "saved";
                     }
                     else
                     {
-                        outcome = $"{verdict.Summary}, but the cell is not persisted ({persistence.Code}): " +
+                        outcome = $"{evidence.Reason}, but the cell is not persisted ({persistence.Code}): " +
                                   $"{persistence.Message}";
                         resultCode = persistence.Code;
                     }
@@ -291,6 +296,15 @@ public sealed partial class NavmeshTools
 
                 string envelope = "{\"pipeline\":" + payload + ",\"verdict\":" +
                                   JsonSerializer.Serialize(verdict, EnvelopeJson) +
+                                  ",\"check\":" + JsonSerializer.Serialize(new
+                                  {
+                                      code = evidence.Code,
+                                      clean = evidence.Clean,
+                                      silent = evidence.Silent,
+                                      corroborated = evidence.Corroborated,
+                                      reason = evidence.Reason,
+                                      geometryRecords = checkGeometry?.Records.Count ?? 0
+                                  }) +
                                   ",\"pluginVerdict\":" + (reported is null ? "null" : JsonSerializer.Serialize(reported)) +
                                   ",\"save\":" + saveOutcomeJson +
                                   ",\"persistence\":" + persistenceJson +
@@ -564,6 +578,26 @@ public sealed partial class NavmeshTools
                 cell = row.EditorId, formId = row.FormId, loaded = true,
                 error = "bad_reply", message = "nav.state answered without the JSON this tool reads",
             };
+        }
+    }
+
+    // Constraint: a silent check may only pass when the geometry the save would compare is readable, so the same
+    // per-record digests the read-back uses are read from the editor before the gate decides.
+    private NavmeshExpected? ReadLoadedGeometry()
+    {
+        if (!BlockedEditor.TryCall(_plugin, "nav.state", out string state, out _, out _)) return null;
+
+        try
+        {
+            CellNumbers numbers = ReadNumbers(state);
+            if (numbers.Records.Count == 0) return null;
+
+            uint cellId = NavmeshPersist.TryParseFormId(numbers.FormId, out uint parsed) ? parsed : 0;
+            return new NavmeshExpected(cellId, numbers.Records);
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 
