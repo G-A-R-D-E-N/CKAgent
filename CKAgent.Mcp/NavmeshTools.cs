@@ -273,7 +273,7 @@ public sealed partial class NavmeshTools
                 }
                 else
                 {
-                    (persistence, saveOutcomeJson) = SaveAndVerify(save_timeout_seconds);
+                    (persistence, saveOutcomeJson) = SaveAndVerify("nav.save confirm", save_timeout_seconds);
                     persistenceJson = JsonSerializer.Serialize(persistence, EnvelopeJson);
 
                     if (persistence.Persisted)
@@ -569,13 +569,13 @@ public sealed partial class NavmeshTools
 
     // Constraint: every mode that computes navmesh or cover geometry persists through this one step, so no mode
     // can report a save it never made and no mode can leave the file for the user to write by hand.
-    private (NavmeshPersistence Persistence, string SaveJson) SaveAndVerify(int timeoutSeconds)
+    private (NavmeshPersistence Persistence, string SaveJson) SaveAndVerify(string saveCommand, int timeoutSeconds)
     {
         // Constraint: the editor writes whichever file it has open, so Data is snapshotted first and the file
         // that changes is the one read back.
         IReadOnlyDictionary<string, (long Length, DateTime Modified)> before = NavmeshPersist.Snapshot(_paths.DataDirectory);
 
-        if (!BlockedEditor.TryCall(_plugin, "nav.save confirm", out string posted, out string code, out string message))
+        if (!BlockedEditor.TryCall(_plugin, saveCommand, out string posted, out string code, out string message))
         {
             return (NavmeshPersistence.Failed("save_failed",
                 $"the editor's File/Save could not be posted: {message}"), "null");
@@ -607,7 +607,7 @@ public sealed partial class NavmeshTools
                 "{\"cover\":" + counts + "}", _paths.CkpeLogPath, null);
 
         // Constraint: this call is how a run that outlasted its budget is finished, so it persists the pass it reads.
-        (NavmeshPersistence persistence, string saveJson) = SaveAndVerify(timeoutSeconds);
+        (NavmeshPersistence persistence, string saveJson) = SaveAndVerify("nav.save confirm", timeoutSeconds);
 
         string envelope = "{\"cover\":" + counts + ",\"save\":" + saveJson +
                           ",\"persistence\":" + JsonSerializer.Serialize(persistence, EnvelopeJson) + "}";
@@ -690,7 +690,7 @@ public sealed partial class NavmeshTools
 
         // Constraint: cover lives in the cell's arrays until the file is written, so a finished pass goes through the
         // same save and read-back step as apply and cannot report done without a matching file.
-        (NavmeshPersistence persistence, string saveJson) = SaveAndVerify(timeoutSeconds);
+        (NavmeshPersistence persistence, string saveJson) = SaveAndVerify("nav.save confirm", timeoutSeconds);
         envelope = envelope[..^1] + ",\"save\":" + saveJson +
                    ",\"persistence\":" + JsonSerializer.Serialize(persistence, EnvelopeJson) + "}";
 

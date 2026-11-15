@@ -136,8 +136,8 @@ public sealed class SavePersistTests
 
         string tampered = Tamper(0x01000FA3, payload =>
         {
-            int vertices = BitConverter.ToInt32(payload, 16);
-            int trianglesAt = 20 + vertices * 12 + 4;
+            int vertices = BitConverter.ToInt32(payload, NvnmAt(payload) + 16);
+            int trianglesAt = TriangleIndicesAt(payload);
             ushort index = BitConverter.ToUInt16(payload, trianglesAt + 2);
             BitConverter.GetBytes((ushort)((index + 1) % vertices)).CopyTo(payload, trianglesAt + 2);
         });
@@ -165,8 +165,9 @@ public sealed class SavePersistTests
 
         string tampered = Tamper(0x01000FA5, payload =>
         {
-            float x = BitConverter.ToSingle(payload, 20);
-            BitConverter.GetBytes(x + 0.5f).CopyTo(payload, 20);
+            int vertexAt = VertexAt(payload);
+            float x = BitConverter.ToSingle(payload, vertexAt);
+            BitConverter.GetBytes(x + 0.5f).CopyTo(payload, vertexAt);
         });
 
         try
@@ -254,9 +255,7 @@ public sealed class SavePersistTests
 
         string tampered = Tamper(0x01000FA6, payload =>
         {
-            int vertices = BitConverter.ToInt32(payload, 16);
-            int trianglesAt = 20 + vertices * 12 + 4;
-            BitConverter.GetBytes((ushort)0xFFFF).CopyTo(payload, trianglesAt);
+            BitConverter.GetBytes((ushort)0xFFFF).CopyTo(payload, TriangleIndicesAt(payload));
         });
 
         try
@@ -275,6 +274,25 @@ public sealed class SavePersistTests
             Directory.Delete(Path.GetDirectoryName(tampered)!, true);
         }
     }
+
+    /// The geometry offsets live inside the NVNM subrecord's own data, which starts after the subrecord's
+    /// six-byte signature and length, so a tamper measured from the record header would rewrite the wrong bytes.
+    private static int NvnmAt(byte[] payload)
+    {
+        for (int at = 0; at + 6 <= payload.Length; at++)
+        {
+            if (payload[at] != (byte)'N' || payload[at + 1] != (byte)'V' || payload[at + 2] != (byte)'N' ||
+                payload[at + 3] != (byte)'M') continue;
+            return at + 6;
+        }
+
+        throw new InvalidOperationException("the fixture record carries no NVNM subrecord");
+    }
+
+    private static int VertexAt(byte[] payload) => NvnmAt(payload) + 20;
+
+    private static int TriangleIndicesAt(byte[] payload) =>
+        NvnmAt(payload) + 20 + BitConverter.ToInt32(payload, NvnmAt(payload) + 16) * 12 + 4;
 
     /// Rewrites one NAVM record of the fixture with `edit` applied to its payload, stored uncompressed so the
     /// tampered bytes go in verbatim; the groups around it are widened by the same delta so the tree still walks.
