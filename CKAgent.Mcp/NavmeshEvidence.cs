@@ -65,19 +65,19 @@ public static class NavmeshEvidence
 
         if (persistence?.Expected is { } expected)
         {
-            foreach (NavmeshExpectedRecord record in expected.Records)
-                editor.Add(new NavmeshEvidenceGeometry(record.NavmFormId.ToString("X8"), record.Vertices,
-                    record.Triangles, record.VertexDigest, record.TriangleDigest));
+            foreach (NavmeshExpectedRecord form in expected.Records)
+                editor.Add(new NavmeshEvidenceGeometry(form.NavmFormId.ToString("X8"), form.Vertices,
+                    form.Triangles, form.VertexDigest, form.TriangleDigest));
         }
 
         if (persistence?.ReadBack is { } readBack)
         {
-            foreach (NavmeshRecord record in readBack.Records)
-                written.Add(new NavmeshEvidenceGeometry(record.NavmFormId.ToString("X8"), record.Vertices,
-                    record.Triangles, record.VertexDigest, record.TriangleDigest));
+            foreach (NavmeshRecord form in readBack.Records)
+                written.Add(new NavmeshEvidenceGeometry(form.NavmFormId.ToString("X8"), form.Vertices,
+                    form.Triangles, form.VertexDigest, form.TriangleDigest));
         }
 
-        var record = new NavmeshEvidenceRecord(
+        var evidence = new NavmeshEvidenceRecord(
             CapturedUtc: captured.ToString("O", CultureInfo.InvariantCulture),
             Mode: mode,
             Cell: cellName,
@@ -96,7 +96,7 @@ public static class NavmeshEvidence
             Pruned: PrunedIds(prunedJson),
             Message: message);
 
-        return JsonSerializer.Serialize(record, EnvelopeJson) + "\n";
+        return JsonSerializer.Serialize(evidence, EnvelopeJson) + "\n";
     }
 
     /// The ids the run dropped, read back out of the prune block the apply reply carries.

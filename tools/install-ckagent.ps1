@@ -64,7 +64,13 @@ $target = Join-Path $plugins 'CKAgent.dll'
 $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
 
 $replaced = Test-Path -LiteralPath $target
-$before = if ($replaced) { (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash } else { $null }
+$before = $null
+
+# Constraint: a target another process holds open cannot even be hashed, and that is the case this script has to name,
+# so the previous hash is best effort and the copy below reports the lock.
+if ($replaced) {
+    try { $before = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash } catch { $before = $null }
+}
 
 try {
     Copy-Item -LiteralPath $source -Destination $target -Force
