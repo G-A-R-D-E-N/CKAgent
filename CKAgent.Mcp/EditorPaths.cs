@@ -5,15 +5,12 @@ namespace Garden.CkAgent;
 /// Paths must come from --ck/--game: the MCP client launches us from any directory.
 public sealed class EditorPaths
 {
-    private EditorPaths(string creationKitPath, string gameDirectory, string stateDirectory, string? stateNote,
-                        bool allowLowPipe)
+    private EditorPaths(string creationKitPath, string gameDirectory, string stateDirectory)
     {
-        LowIntegrityPipeAllowed = allowLowPipe;
         CreationKitPath = creationKitPath;
         GameDirectory = gameDirectory;
         DataDirectory = Path.Combine(gameDirectory, "Data");
         StateDirectory = stateDirectory;
-        StateDirectoryNote = stateNote;
         ManifestPath = Path.Combine(stateDirectory, "commands.json");
         JobsDirectory = Path.Combine(stateDirectory, "jobs");
         BackupsDirectory = Path.Combine(stateDirectory, "backups");
@@ -23,23 +20,19 @@ public sealed class EditorPaths
     public string GameDirectory { get; }
     public string DataDirectory { get; }
     public string StateDirectory { get; }
-
-    // Constraint: the note is null for a first-choice folder and otherwise names why the host settled elsewhere.
-    public string? StateDirectoryNote { get; }
     public string ManifestPath { get; }
     public string JobsDirectory { get; }
-
-    // Constraint: only --allow-low-pipe sets this, so the low-labelled pipe is never reached by default.
-    public bool LowIntegrityPipeAllowed { get; }
     public string BackupsDirectory { get; }
 
     public string EditorWarningsPath => Path.Combine(GameDirectory, "EditorWarnings.txt");
+
+    public string CkpeLogPath => Path.Combine(GameDirectory, "Logs", "CKPE", "CreationKitPlatformExtended.log");
 
     public string? EditorVersion => File.Exists(CreationKitPath)
         ? FileVersionInfo.GetVersionInfo(CreationKitPath).FileVersion
         : null;
 
-    public static bool TryCreate(string? creationKit, string? game, string? state, bool allowLowPipe,
+    public static bool TryCreate(string? creationKit, string? game, string? state,
                                  out EditorPaths? paths, out string error)
     {
         paths = null;
@@ -84,31 +77,31 @@ public sealed class EditorPaths
             return false;
         }
 
-        var candidates = new List<string>();
+        string stateRoot;
         if (!string.IsNullOrWhiteSpace(state))
         {
-            // Constraint: an explicit --state is the caller's decision, so it is used or refused, never replaced.
-            try { candidates.Add(Path.GetFullPath(state)); }
+            try { stateRoot = Path.GetFullPath(state); }
             catch (Exception) { error = "--state is not a valid path"; return false; }
         }
         else
         {
-            string profile = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            candidates.Add(Path.Combine(profile, "ckagent"));
-            candidates.Add(Path.Combine(profile, "Temp", "Low", "ckagent"));
-            candidates.Add(Path.Combine(Path.GetTempPath(), "ckagent"));
-
-            // Constraint: the host's own folder is the last resort, because a low-integrity host sits in a low-labelled folder.
-            candidates.Add(Path.Combine(AppContext.BaseDirectory, "state"));
+            stateRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ckagent");
         }
 
-        if (!StateFolder.Choose(candidates, out string stateRoot, out string stateNote))
+        try
         {
-            error = $"no state directory is writable: {stateNote}";
+            Directory.CreateDirectory(stateRoot);
+            Directory.CreateDirectory(Path.Combine(stateRoot, "jobs"));
+            Directory.CreateDirectory(Path.Combine(stateRoot, "backups"));
+        }
+        catch (Exception exception)
+        {
+            error = $"state directory {stateRoot} is not writable: {exception.Message}";
             return false;
         }
 
-        paths = new EditorPaths(exe, gameDirectory, stateRoot, stateNote.Length == 0 ? null : stateNote, allowLowPipe);
+        paths = new EditorPaths(exe, gameDirectory, stateRoot);
         return true;
     }
 }

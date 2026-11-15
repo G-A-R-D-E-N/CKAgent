@@ -13,9 +13,4 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
   </ItemGroup>
-  <ItemGroup>
-    <!-- Constraint: the startup decisions are internal, so the tests see them through this instead of a copy. -->
-    <InternalsVisibleTo Include="CKAgent.Mcp.Tests" />
-  </ItemGroup>
-
 </Project>

@@ -1,6 +1,7 @@
 namespace Garden.CkAgent;
 
-/// Constraint: every caller of the plugin pipe must go through this, so the retry logic can be driven without one.
+/// Constraint: only the plugin reaches editor internals, and every caller must fail with a code rather than an
+/// exception, so the seam between this process and the editor is a single method.
 public interface IPluginCaller
 {
     bool TryCall(string command, out string payload, out string code, out string message);

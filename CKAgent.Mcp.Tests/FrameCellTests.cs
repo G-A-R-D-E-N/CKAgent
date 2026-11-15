@@ -2,71 +2,61 @@ using Garden.CkAgent;
 
 namespace CKAgent.Mcp.Tests;
 
-/// Constraint: framing the cell that is already open must not reopen it and wait for a change that cannot come.
+/// Regression: framing a reference in a named cell has to open that cell and wait for the window to actually
+/// hold a different one, because a cell that was already open satisfies a wait that only checks for "a cell".
 public sealed class FrameCellTests
 {
-    private const string OriginLoaded =
+    private const string FirstCell =
         "{\"editorId\":\"DiamondCityOrigin\",\"formId\":\"00000FEE\",\"cell\":\"0x111\",\"readable\":true,\"loaded\":true}";
 
-    private static FakePlugin FrameAnswers(string cellFirst, string? cellAfterLoad = null, string? loadedRow = null)
+    private const string SecondCell =
+        "{\"editorId\":\"AndrewStation01\",\"formId\":\"00074D28\",\"cell\":\"0x222\",\"readable\":true}";
+
+    // Constraint: the handle read before the load and every read after it, so the second answer is what changes.
+    private static FakePlugin Plugin(string cellAfterLoad = SecondCell) => new((command, seen) => command switch
     {
-        return new FakePlugin((command, seen) => command switch
-        {
-            "cell" => FakePlugin.Reply.Good(seen == 0 || cellAfterLoad == null ? cellFirst : cellAfterLoad),
-            _ when loadedRow != null && command == $"ui.cellload {loadedRow}" => FakePlugin.Reply.Good($"{{\"cell\":\"{loadedRow}\",\"row\":3}}"),
-            _ when command.StartsWith("frame ", StringComparison.Ordinal) => FakePlugin.Reply.Good("{\"aim\":1.0000,\"references\":1961}"),
-            _ => FakePlugin.Reply.Failed("unexpected", command),
-        });
-    }
+        "cell" => FakePlugin.Reply.Good(seen == 0 ? FirstCell : cellAfterLoad),
+        "frame DiamondStandsMayor01" => FakePlugin.Reply.Good("{\"aim\":1.0000,\"references\":1961}"),
+        _ when command.StartsWith("ui.cellload ", StringComparison.Ordinal) => FakePlugin.Reply.Good("{\"posted\":true}"),
+        _ => FakePlugin.Reply.Failed("unexpected", command),
+    });
 
     [Fact]
-    public void AFrameOnTheAlreadyLoadedCellDoesNotLoadIt()
+    public void AnAskedCellIsLoadedBeforeTheCameraFrames()
     {
-        var plugin = FrameAnswers(OriginLoaded);
-
-        CameraResult result = new CameraTools(plugin).Frame("DiamondStandsMayor01", cell: "DiamondCityOrigin");
-
-        Assert.Equal("ok", result.Code);
-        Assert.DoesNotContain("ui.cellload", string.Join(" ", plugin.Calls));
-        Assert.Contains("already loaded", result.Message);
-        Assert.Contains("DiamondCityOrigin", result.Message);
-    }
-
-    [Fact]
-    public void TheAlreadyLoadedCheckIgnoresTheCaseOfTheName()
-    {
-        var plugin = FrameAnswers(OriginLoaded);
-
-        CameraResult result = new CameraTools(plugin).Frame("DiamondStandsMayor01", cell: "diamondcityorigin");
-
-        Assert.Equal("ok", result.Code);
-        Assert.DoesNotContain("ui.cellload", string.Join(" ", plugin.Calls));
-    }
-
-    [Fact]
-    public void AFrameOnAnotherCellLoadsItAndReportsWhatTheWindowHolds()
-    {
-        var plugin = FrameAnswers(OriginLoaded,
-            "{\"editorId\":\"AndrewStation01\",\"formId\":\"00074D28\",\"cell\":\"0x222\",\"readable\":true}",
-            loadedRow: "AndrewStation01");
+        FakePlugin plugin = Plugin();
 
         CameraResult result = new CameraTools(plugin).Frame("DiamondStandsMayor01", cell: "AndrewStation01");
 
         Assert.Equal("ok", result.Code);
-        Assert.Contains("ui.cellload AndrewStation01", plugin.Calls);
-        Assert.Contains("in AndrewStation01", result.Message);
-        Assert.DoesNotContain("already loaded", result.Message);
+        int load = plugin.Calls.IndexOf("ui.cellload AndrewStation01");
+        int frame = plugin.Calls.IndexOf("frame DiamondStandsMayor01");
+        Assert.True(load >= 0, string.Join(" | ", plugin.Calls));
+        Assert.True(frame > load, "the frame must come after the load: " + string.Join(" | ", plugin.Calls));
+        Assert.Contains("frame DiamondStandsMayor01", result.Message);
+    }
+
+    [Fact]
+    public void ACellThatNeverChangesIsNotReportedAsLoaded()
+    {
+        FakePlugin plugin = Plugin(cellAfterLoad: FirstCell);
+
+        CameraResult result = new CameraTools(plugin).Frame("DiamondStandsMayor01", cell: "AndrewStation01");
+
+        Assert.Equal("cell_not_loaded", result.Code);
+        Assert.Contains("did not report a new cell", result.Message);
+        Assert.DoesNotContain("frame DiamondStandsMayor01", plugin.Calls);
     }
 
     [Fact]
     public void AFrameWithNoCellAskedNeverLoadsOne()
     {
-        var plugin = FrameAnswers(OriginLoaded);
+        FakePlugin plugin = Plugin();
 
         CameraResult result = new CameraTools(plugin).Frame("DiamondStandsMayor01");
 
         Assert.Equal("ok", result.Code);
         Assert.DoesNotContain("ui.cellload", string.Join(" ", plugin.Calls));
-        Assert.Contains("in DiamondCityOrigin", result.Message);
+        Assert.Contains("frame DiamondStandsMayor01", plugin.Calls);
     }
 }

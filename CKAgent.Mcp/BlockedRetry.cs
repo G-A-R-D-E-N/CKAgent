@@ -58,6 +58,14 @@ public static class BlockedEditor
         return false;
     }
 
+    public static string? BlockingTitle(IPluginCaller plugin)
+    {
+        if (!plugin.TryCall("status", out string status, out _, out _))
+            return null;
+
+        return ReadString(status, "blockedBy");
+    }
+
     /// Reads the block from status, then requires the modal list for the dialog's hwnd, because a
     /// dismissal requires a handle.
     private static string? BlockedBy(IPluginCaller plugin, out long? handle)

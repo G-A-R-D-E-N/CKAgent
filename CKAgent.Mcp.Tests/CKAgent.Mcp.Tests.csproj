@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Constraint: xunit v3, because VSTest cannot start a testhost on this machine even for an empty project. -->
+  <!-- Constraint: xunit v3 is an executable, and the SDK 10 native Microsoft.Testing.Platform mode of
+       dotnet test is selected in global.json, so the suite runs without a VSTest testhost. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <OutputType>Exe</OutputType>
@@ -11,7 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="xunit.v3" Version="2.0.3" />
+    <PackageReference Include="xunit.v3.mtp-v1" Version="3.2.2" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,6 +21,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CKAgent.Mcp\CKAgent.Mcp.csproj" />
+  </ItemGroup>
+
+  <!-- A plugin a real run saved, so the read-back is tested against NAVM records the Creation Kit wrote. -->
+  <ItemGroup>
+    <None Include="Fixtures\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

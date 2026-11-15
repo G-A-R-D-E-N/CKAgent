@@ -14,6 +14,9 @@
 #include "AgentCellFlow.h"
 #include "AgentEditorShared.h"
 #include "AgentEditorUi.h"
+#include "AgentNavmesh.h"
+#include "AgentPlace.h"
+#include "AgentUia.h"
 
 namespace ckagent
 {
@@ -626,10 +629,45 @@ namespace ckagent
 
 	}
 
+	namespace
+	{
+		// Constraint: the cell pointer is only taken when its page is committed, because a stale render window
+		// reads as garbage and both the navmesh and the placement tools dereference what they are given.
+		std::uintptr_t ReadLoadedCell(std::uintptr_t window)
+		{
+			if (!window) return 0;
+
+			const std::uintptr_t slot = window + kCurrentCellOffset;
+			MEMORY_BASIC_INFORMATION info{};
+			if (!VirtualQuery(reinterpret_cast<const void*>(slot), &info, sizeof info)) return 0;
+			if (info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) return 0;
+			return *reinterpret_cast<const std::uintptr_t*>(slot);
+		}
+	}
+
 	bool RunEditorTool(std::uintptr_t window, const std::string& tool, const std::string& args,
 		std::string& payload, std::string& errorCode, std::string& errorMessage)
 	{
 		using namespace editor;
+
+		// Constraint: navmesh and placement act on the loaded cell, so the pointer is read here, on the editor
+		// thread, and handed in; these verbs are routed through this entry so they answer like the rest.
+		if (tool.rfind("nav.", 0) == 0 || tool.rfind("place.", 0) == 0)
+		{
+			const void* cell = reinterpret_cast<const void*>(ReadLoadedCell(window));
+			if (tool.rfind("nav.", 0) == 0)
+				return RunNavmeshTool(tool, args, cell, payload, errorCode, errorMessage);
+			return RunPlaceTool(tool, args, cell, payload, errorCode, errorMessage);
+		}
+
+		// Constraint: the save dialog keeps its parts inside DirectUIHWND with no window handle, so this path
+		// is separate from the Win32 control path below and has its own two verbs.
+		if (tool.rfind("uia.", 0) == 0)
+		{
+			if (tool == "uia.save")
+				return uia::SaveByListItem(args, payload, errorCode, errorMessage);
+			return uia::AnswerFileDialog(args, payload, errorCode, errorMessage);
+		}
 
 		// Args must be space separated; a tool that requires free text takes the rest of the line.
 		std::vector<std::string> parts;

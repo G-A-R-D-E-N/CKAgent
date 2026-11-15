@@ -1,0 +1,104 @@
+name: navmesh commands
+
+# The navmesh tools address the editor's menu by caption because the ids differ per build, and one of
+# them changes cell data. Both are source properties, so they can be gated without an editor; the live
+# behaviour is covered by tools/navmesh-probe.ps1, which needs the CK.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # Nothing else compiles the C++ plugin, and a wrong editor call is a crash in the editor rather than a failed
+  # test. CKPE's own DLL build is a separate MSVC solution, so every plugin source is compiled against the public
+  # CKPE headers here; linking the DLL still needs a built CKPE, which the editor machine has.
+  plugin:
+    # Pinned to the image whose MSVC is the one the plugin is built and shipped with: windows-latest now
+    # carries VS2026, which is not the generator this project targets.
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The CKPE headers the plugin includes
+        shell: pwsh
+        run: |
+          git clone --depth 1 --no-tags https://github.com/Perchik71/Creation-Kit-Platform-Extended.git ckpe
+          if ($LASTEXITCODE -ne 0) { throw 'CKPE could not be fetched' }
+
+      - name: The plugin compiles
+        shell: pwsh
+        run: |
+          cmake -S plugin -B build/plugin -G "Visual Studio 17 2022" -A x64 `
+            -DCKPE_ROOT="${{ github.workspace }}/ckpe" -DCKAGENT_COMPILE_ONLY=ON
+          if ($LASTEXITCODE -ne 0) { throw 'the plugin did not configure' }
+          cmake --build build/plugin --config Release
+          if ($LASTEXITCODE -ne 0) { throw 'the plugin did not compile' }
+
+  # The plugin cannot be linked here (CKPE is a full MSVC build of its own), but the server can, and it is
+  # the only compile check the new tool gets before it reaches the editor machine.
+  server:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: The MCP server builds with ck.navmesh registered
+        shell: pwsh
+        run: dotnet build CKAgent.Mcp/CKAgent.Mcp.csproj -c Release
+
+  # The suite drives the pipe seam with canned replies and the save verdict with a throwaway install, so it
+  # runs with no editor. The SDK 10 is required: global.json selects its native Microsoft.Testing.Platform
+  # mode for dotnet test, which is how the xunit v3 executable gets run and reported as a test run.
+  tests:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # 8.0 for the net8.0 the projects target, 10.0 for the dotnet test runner that global.json selects.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: The pipe seam, the save verdict and the navmesh check pass
+        shell: pwsh
+        run: dotnet test CKAgent.Mcp.Tests/CKAgent.Mcp.Tests.csproj -c Release
+
+  commands:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Navmesh commands are menu-resolved and finalize needs confirmation
+        shell: pwsh
+        run: ./tools/navmesh-command.test.ps1 -Evidence navmesh-commands.json
+
+      - name: A hard-coded menu id is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentNavmesh.cpp -Raw) +
+            "`nconstexpr int kPinnedCheckNavMeshes = 40568;`n" |
+            Set-Content drift/AgentNavmesh.cpp
+          ./tools/navmesh-command.test.ps1 -Plugin drift/AgentNavmesh.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the navmesh gate accepted a hard-coded menu id' }
+          $global:LASTEXITCODE = 0
+
+      - name: An unconfirmed finalize is rejected
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force drift | Out-Null
+          (Get-Content plugin/AgentNavmesh.cpp -Raw) -replace 'if \(Lower\(args\) != "confirm"\)', 'if (false)' |
+            Set-Content drift/AgentNavmesh.cpp
+          ./tools/navmesh-command.test.ps1 -Plugin drift/AgentNavmesh.cpp
+          if ($LASTEXITCODE -eq 0) { throw 'the navmesh gate accepted a finalize with no confirmation' }
+          $global:LASTEXITCODE = 0

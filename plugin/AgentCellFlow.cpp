@@ -188,11 +188,21 @@ namespace ckagent
 
 		if (tool == "ui.dataload")
 		{
-			const std::string plugin = args;
+			std::string plugin = args;
+			bool makeActive = false;
+
+			// Constraint: an active file is what makes a master cell writable, so it is a separate request.
+			const std::size_t lastSpace = args.rfind(' ');
+			if (lastSpace != std::string::npos && Lower(args.substr(lastSpace + 1)) == "active")
+			{
+				plugin = args.substr(0, lastSpace);
+				makeActive = true;
+			}
+
 			if (plugin.empty())
 			{
 				errorCode = "bad_args";
-				errorMessage = "ui.dataload needs a plugin name, for example Fallout4.esm";
+				errorMessage = "ui.dataload needs a plugin name, for example Fallout4.esm, or '<plugin> active' to make it the active file";
 				return false;
 			}
 
@@ -235,12 +245,30 @@ namespace ckagent
 				return false;
 			}
 
-			// The checkbox is the state image, so it must be set rather than left to the click handler.
 			SelectListViewRow(list, row);
-			LVITEMW li{};
-			li.stateMask = LVIS_STATEIMAGEMASK;
-			li.state = INDEXTOSTATEIMAGEMASK(2);
-			Send(list, LVM_SETITEMSTATE, row, reinterpret_cast<LPARAM>(&li));
+			if (makeActive)
+			{
+				// Constraint: the row must be selected before the editor accepts it as the active file.
+				Sleep(200);
+				HWND activeButton = FindButtonByText(dialog, "Set as Active File");
+				if (!activeButton)
+				{
+					errorCode = "no_active_button";
+					errorMessage = "the Data dialog has no Set as Active File button on this build";
+					return false;
+				}
+
+				PostMessageW(activeButton, BM_CLICK, 0, 0);
+				Sleep(400);
+			}
+			else
+			{
+				// The checkbox is the state image, so it must be set rather than left to the click handler.
+				LVITEMW li{};
+				li.stateMask = LVIS_STATEIMAGEMASK;
+				li.state = INDEXTOSTATEIMAGEMASK(2);
+				Send(list, LVM_SETITEMSTATE, row, reinterpret_cast<LPARAM>(&li));
+			}
 
 			HWND ok = FindButtonByText(dialog, "OK");
 			if (!ok) ok = FindButtonByText(dialog, "Open");

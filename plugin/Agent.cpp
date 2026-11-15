@@ -665,10 +665,12 @@ namespace ckagent
 					return;
 				}
 			}
-			else if (tool.rfind("ui.", 0) == 0)
+			else if (tool.rfind("ui.", 0) == 0 || tool.rfind("uia.", 0) == 0 || tool.rfind("nav.", 0) == 0 ||
+				tool.rfind("place.", 0) == 0)
 			{
 				// Constraint: the editor's own controls must be driven from this thread, where a handler
-				// that opens a dialog or requires a cell load runs inline and the reply reports it.
+				// that opens a dialog or requires a cell load runs inline and the reply reports it. The
+				// navmesh, placement and UI Automation verbs are routed through the same entry.
 				if (!RunEditorTool(g_renderWindow, tool, args, payload, errorCode, errorMessage))
 				{
 					call.reply = "RPLY " + seq + " ERR " + errorCode + " " + errorMessage + "\n";
