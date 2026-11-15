@@ -20,21 +20,21 @@
 #include <CKPE.Common.AddressLibrary.h>
 #include <CKPE.PluginAPI.PluginAPI.h>
 #include <EditorAPI/B/BGSRenderWindowCamera.h>
-#include <EditorAPI/T/TES.h>
 #include <EditorAPI/T/TESObjectCELL.h>
 
 #include "Agent.h"
+#include "AgentCellFlow.h"
 #include "AgentEditorShared.h"
 #include "AgentFrame.h"
 #include "AgentEditorUi.h"
 #include "AgentUi.h"
 #include "Protocol.h"
+#include "AgentWire.h"
 
 namespace ckagent
 {
 	namespace
 	{
-		using TES = CKPE::Fallout4::EditorAPI::TES;
 		using CameraApi = CKPE::Fallout4::EditorAPI::BGSRenderWindowCamera;
 		using EditorCell = CKPE::Fallout4::EditorAPI::Forms::TESObjectCELL;
 		using NiPoint3 = CKPE::Fallout4::EditorAPI::NiPoint3;
@@ -59,7 +59,6 @@ namespace ckagent
 		constexpr std::uintptr_t kCameraTableOffset = 0x2FD4828;        // offset of BGSRenderWindowCamera's class table
 		constexpr std::size_t kCameraSize = 0x88;                       // BGSRenderWindowCamera size, so a read stays inside it
 		constexpr std::uintptr_t kRenderWindowSize = 0x180;             // BGSRenderWindow size, so a read stays inside it
-		constexpr std::uintptr_t kCurrentCellOffset = 0xF8;             // offset of _CurrentCell in BGSRenderWindow (CKPE layout)
 
 		// The view must be driven through the scene camera (findings/ckpe-render-control.md holds the chain).
 		constexpr std::uintptr_t kCameraNiCameraOffset = 0x10;  // offset of the NiCamera pointer inside the camera object
@@ -91,6 +90,7 @@ namespace ckagent
 		DWORD g_editorThread = 0;
 		HANDLE g_pipe = nullptr;
 		std::thread g_worker;
+		std::thread g_lowWorker;
 		std::atomic<bool> g_running{ false };
 		std::atomic<bool> g_threadOk{ false };
 		bool g_buildSupported = false;
@@ -134,34 +134,26 @@ namespace ckagent
 				return buf;
 			}
 
-			if (TES::Singleton.Empty())
-				TES::Singleton = ImageAddress(kTesSingletonOffset);
-
-			TES* tes = TES::Singleton.GetSingleton();
-			if (!tes)
+			const Placement where = ReadPlacement(ImageAddress(kTesSingletonOffset));
+			if (!where.hasSingleton)
 				return "{\"supported\":true,\"loaded\":false}";
 
-			const bool empty = tes->Empty();
-			const bool interior = tes->HasLoadedInterior();
-			const auto coords = tes->GetCurrentRendererCellCoordinates();
-
 			// A blocked editor must say so here, or a caller sees only a disabled frame and no reason.
-			std::string blocked = editor::HiddenModalTitle();
-			for (auto& c : blocked)
-				if (c == '"') c = '\'';
+			const editor::ModalBlock modal = editor::HiddenModal();
 
-			char buf[420];
+			char buf[900];
 			std::snprintf(buf, sizeof buf,
 				"{\"supported\":true,\"loaded\":%s,\"interior\":%s,"
 				"\"gridX\":%d,\"gridY\":%d,\"hasWorldSpace\":%s,"
-				"\"pid\":%lu,\"onEditorThread\":%s,\"blockedBy\":\"%s\"}",
-				empty ? "false" : "true",
-				interior ? "true" : "false",
-				static_cast<int>(coords.X), static_cast<int>(coords.Y),
-				tes->worldSpace ? "true" : "false",
+				"\"pid\":%lu,\"onEditorThread\":%s,\"blockedBy\":\"%s\",\"modalButtons\":%s,"
+				"\"dismissBy\":\"%s\"}",
+				where.empty ? "false" : "true",
+				where.interior ? "true" : "false",
+				where.gridX, where.gridY,
+				where.hasWorldSpace ? "true" : "false",
 				GetCurrentProcessId(),
 				g_threadOk.load() ? "true" : "false",
-				blocked.c_str());
+				modal.title.c_str(), modal.buttons.c_str(), modal.dismiss.c_str());
 			return buf;
 		}
 
@@ -386,8 +378,10 @@ namespace ckagent
 				return false;
 			}
 
-			// Constraint: the scene camera is a slave, because the editor copies the camera object's node
-			// into it every frame, so a write must go to the camera object and the slave proves it took.
+			if (args.rfind("lens", 0) == 0) return RunLensTool(args, FrameTarget{ reinterpret_cast<void*>(g_camera), nullptr }, payload, errorCode, errorMessage);
+			if (args.rfind("rotate", 0) == 0) return RunRotateTool(args, FrameTarget{ reinterpret_cast<void*>(g_camera), nullptr }, payload, errorCode, errorMessage);
+
+			// Constraint: the slave is copied from the camera node each frame, so a write goes to the object.
 			auto* camera = reinterpret_cast<CameraApi*>(g_camera);
 			auto* node = camera->GetNode();
 			const auto* worldTranslate = node ? reinterpret_cast<const float*>(reinterpret_cast<std::uintptr_t>(node) + kNiCameraTranslate) : nullptr;
@@ -499,8 +493,7 @@ namespace ckagent
 			// comparable directly; the rotation difference is reported as a pose-dependent offset instead.
 			const bool synced = drift < 0.5;
 
-			// The reply must name every object it touched: a resolution and a guess have to look different.
-			// A lookat must say which path aimed it, so the editor's own answer is never mistaken for a computed one.
+			// The reply must name every object it touched, and a lookat must say which path aimed it.
 			const char* via = !looking ? "direct" : (lookatFromEditor ? "lookat-editor" : "lookat-computed");
 
 			char buf[1400];
@@ -508,7 +501,8 @@ namespace ckagent
 				"{\"camera\":\"0x%llX\",\"sceneCamera\":\"0x%llX\","
 				"\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,\"wasX\":%.4f,\"wasY\":%.4f,\"wasZ\":%.4f,"
 				"\"rotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"scale\":%.4f,"
-				"\"scene\":[%.4f,%.4f,%.4f],\"rotationOffset\":%.4f,\"positionSynced\":%s,"
+				"\"sceneRotate\":[%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f],\"scene\":[%.4f,%.4f,%.4f],"
+				"\"rotationOffset\":%.4f,\"positionSynced\":%s,"
 				"\"step\":[%.4f,%.4f,%.4f],\"moved\":%s,"
 				"\"forward\":[%.4f,%.4f,%.4f],\"aim\":%.4f,\"via\":\"%s\","
 				"\"window\":\"0x%llX\",\"resolvedAt\":\"%s\"}",
@@ -522,6 +516,7 @@ namespace ckagent
 				worldRotate ? worldRotate[kNiRowStride + 0] : 0.0f, worldRotate ? worldRotate[kNiRowStride + 1] : 0.0f, worldRotate ? worldRotate[kNiRowStride + 2] : 0.0f,
 				worldRotate ? worldRotate[kNiRowStride * 2 + 0] : 0.0f, worldRotate ? worldRotate[kNiRowStride * 2 + 1] : 0.0f, worldRotate ? worldRotate[kNiRowStride * 2 + 2] : 0.0f,
 				scale,
+				sceneRotate[0], sceneRotate[1], sceneRotate[2], sceneRotate[kNiRowStride + 0], sceneRotate[kNiRowStride + 1], sceneRotate[kNiRowStride + 2], sceneRotate[kNiRowStride * 2 + 0], sceneRotate[kNiRowStride * 2 + 1], sceneRotate[kNiRowStride * 2 + 2],
 				sceneTranslate[0], sceneTranslate[1], sceneTranslate[2], rotationDrift,
 				synced ? "true" : "false",
 				stepDelta[0], stepDelta[1], stepDelta[2],
@@ -565,6 +560,8 @@ namespace ckagent
 
 			const auto cell = *reinterpret_cast<const std::uintptr_t*>(g_renderWindow + kCurrentCellOffset);
 
+			const Placement where = ReadPlacement(ImageAddress(kTesSingletonOffset));
+
 			// A confirmed load must name the cell, because a pointer alone says nothing about which one it is.
 			std::string editorId, formId;
 			bool readable = false;
@@ -579,16 +576,20 @@ namespace ckagent
 				readable = true;
 			}
 
-			char buf[640];
+			char buf[768];
 			std::snprintf(buf, sizeof buf,
 				"{\"resolved\":true,\"window\":\"0x%llX\",\"cell\":\"0x%llX\",\"loaded\":%s,\"readable\":%s,"
-				"\"editorId\":%s,\"formId\":%s}",
+				"\"editorId\":%s,\"formId\":%s,"
+				"\"interior\":%s,\"gridX\":%d,\"gridY\":%d,\"hasWorldSpace\":%s}",
 				static_cast<unsigned long long>(g_renderWindow),
 				static_cast<unsigned long long>(cell),
 				cell ? "true" : "false",
 				readable ? "true" : "false",
 				editor::Quote(editorId).c_str(),
-				editor::Quote(formId).c_str());
+				editor::Quote(formId).c_str(),
+				where.interior ? "true" : "false",
+				where.gridX, where.gridY,
+				where.hasWorldSpace ? "true" : "false");
 			return buf;
 		}
 
@@ -664,13 +665,13 @@ namespace ckagent
 					return;
 				}
 			}
-			            else if (tool.rfind("ui.", 0) == 0 || tool.rfind("uia.", 0) == 0 || tool.rfind("nav.", 0) == 0 ||
-                     tool.rfind("place.", 0) == 0)
+			else if (tool.rfind("ui.", 0) == 0 || tool.rfind("uia.", 0) == 0 || tool.rfind("nav.", 0) == 0 ||
+				tool.rfind("place.", 0) == 0)
 			{
 				// Constraint: the editor's own controls must be driven from this thread, where a handler
-				// that opens a dialog or requires a cell load runs inline and the reply reports it.
-				const std::uintptr_t cell = ResolveNow(g_cameraWhen) ? *reinterpret_cast<const std::uintptr_t*>(g_renderWindow + kCurrentCellOffset) : 0;
-				if (!RunEditorTool(tool, args, reinterpret_cast<const void*>(cell), payload, errorCode, errorMessage))
+				// that opens a dialog or requires a cell load runs inline and the reply reports it. The
+				// navmesh, placement and UI Automation verbs are routed through the same entry.
+				if (!RunEditorTool(g_renderWindow, tool, args, payload, errorCode, errorMessage))
 				{
 					call.reply = "RPLY " + seq + " ERR " + errorCode + " " + errorMessage + "\n";
 					return;
@@ -793,63 +794,16 @@ namespace ckagent
 
 		// --- pipe (the worker must never touch editor state) ---
 
-		bool ReadLine(HANDLE pipe, std::string& carry, std::string& line)
-		{
-			for (;;)
-			{
-				const std::size_t newline = carry.find('\n');
-				if (newline != std::string::npos)
-				{
-					line = carry.substr(0, newline);
-					carry.erase(0, newline + 1);
-					if (!line.empty() && line.back() == '\r')
-						line.pop_back();
-					return true;
-				}
-
-				char buf[4096];
-				DWORD read = 0;
-				if (!ReadFile(pipe, buf, sizeof buf, &read, nullptr) || read == 0)
-					return false;
-
-				carry.append(buf, read);
-				if (carry.size() > (1 << 20)) // a runaway client must not grow this forever
-					return false;
-			}
-		}
-
-		bool WriteAll(HANDLE pipe, const std::string& text)
-		{
-			std::size_t sent = 0;
-			while (sent < text.size())
-			{
-				DWORD wrote = 0;
-				if (!WriteFile(pipe, text.data() + sent, static_cast<DWORD>(text.size() - sent), &wrote, nullptr) || wrote == 0)
-					return false;
-				sent += wrote;
-			}
-			return true;
-		}
-
-		// A logged reply must not carry its newline into the window transcript.
-		std::string Trimmed(const std::string& text)
-		{
-			std::size_t end = text.size();
-			while (end > 0 && (text[end - 1] == '\n' || text[end - 1] == '\r'))
-				--end;
-			return text.substr(0, end);
-		}
-
 		void ServeClient(HANDLE pipe)
 		{
 			char helo[128];
 			std::snprintf(helo, sizeof helo, "HELO %s %s\n", kProtocolVersion, kSupportedEditorBuild);
-			if (!WriteAll(pipe, helo))
+			if (!wire::WriteAll(pipe, helo))
 				return;
 
 			std::string carry;
 			std::string line;
-			while (g_running.load() && ReadLine(pipe, carry, line))
+			while (g_running.load() && wire::ReadLine(pipe, carry, line))
 			{
 				if (line.rfind("CALL ", 0) != 0)
 					continue;
@@ -861,8 +815,8 @@ namespace ckagent
 					return;
 
 				RunOnEditorThread(call);
-				LogLine("CALL " + call.request + " -> " + Trimmed(call.reply));
-				const bool written = WriteAll(pipe, call.reply);
+				LogLine("CALL " + call.request + " -> " + wire::Trimmed(call.reply));
+				const bool written = wire::WriteAll(pipe, call.reply);
 				CloseHandle(call.done);
 				if (!written)
 					return;
@@ -883,21 +837,22 @@ namespace ckagent
 				g_camera ? "resolved" : (g_cameraReason.empty() ? "unresolved" : g_cameraReason.c_str()));
 		}
 
-		void WorkerLoop()
+		void WorkerLoop(const wchar_t* pipeName, bool lowLabel)
 		{
 			// The worker must announce itself: a pipe that never appears has to be distinguishable from one that failed.
-			LogLine(Format("CKAgent: worker started (pid %lu)", GetCurrentProcessId()));
+			LogLine(Format("CKAgent: worker started on %ls (pid %lu)", pipeName, GetCurrentProcessId()));
 
 			while (g_running.load())
 			{
-				HANDLE pipe = CreateNamedPipeW(kPipeName,
+				SECURITY_ATTRIBUTES security = PipeSecurity(lowLabel);
+				HANDLE pipe = CreateNamedPipeW(pipeName,
 					PIPE_ACCESS_DUPLEX,
 					PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-					1, 64 * 1024, 64 * 1024, 0, nullptr);
+					1, 64 * 1024, 64 * 1024, 0, &security);
 
 				if (pipe == INVALID_HANDLE_VALUE)
 				{
-					LogLine(Format("CKAgent: CreateNamedPipe failed (%lu)", GetLastError()));
+					LogLine(Format("CKAgent: CreateNamedPipe on %ls failed (%lu)", pipeName, GetLastError()));
 					return;
 				}
 
@@ -968,10 +923,18 @@ namespace ckagent
 		SetTimer(g_window, kUiTimer, 500, nullptr);
 
 		g_running = true;
-		g_worker = std::thread(WorkerLoop);
+		g_worker = std::thread(WorkerLoop, kPipeName, false);
 
-					LogLine(Format("CKAgent: serving on %ls for build %s",
-				kPipeName, FormatBuild(runtimeVersion).c_str()));
+		// Constraint: the low-labelled pipe is opt-in, so the strict pipe is served alone unless the ini asks for more.
+		if (LowIntegrityPipeEnabled())
+			g_lowWorker = std::thread(WorkerLoop, kLowPipeName, true);
+
+		LogLine(Format("CKAgent: serving on %ls for build %s", kPipeName, FormatBuild(runtimeVersion).c_str()));
+
+		if (g_lowWorker.joinable())
+			LogLine(Format("CKAgent: also serving on %ls, from CKAgent.ini [transport] LowIntegrityPipe=1",
+				kLowPipeName));
+
 		return true;
 	}
 
@@ -980,14 +943,25 @@ namespace ckagent
 		if (!g_running.exchange(false))
 			return;
 
-					// Stop must unblock ConnectNamedPipe with a throwaway client.
+		// Constraint: Stop unblocks ConnectNamedPipe with a throwaway client on every pipe that was opened.
 		HANDLE wake = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
 			OPEN_EXISTING, 0, nullptr);
 		if (wake != INVALID_HANDLE_VALUE)
 			CloseHandle(wake);
 
+		if (g_lowWorker.joinable())
+		{
+			HANDLE lowWake = CreateFileW(kLowPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+				OPEN_EXISTING, 0, nullptr);
+			if (lowWake != INVALID_HANDLE_VALUE)
+				CloseHandle(lowWake);
+		}
+
 		if (g_worker.joinable())
 			g_worker.join();
+
+		if (g_lowWorker.joinable())
+			g_lowWorker.join();
 
 		if (g_window)
 		{

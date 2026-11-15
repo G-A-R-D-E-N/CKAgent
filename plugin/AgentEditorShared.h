@@ -2,11 +2,15 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace ckagent
 {
+	// Invariant: the render window holds one cell, at this offset in the CKPE layout, and clearing it closes.
+	inline constexpr std::uintptr_t kCurrentCellOffset = 0xF8;
+
 	// Constraint: every helper here must be called on the editor thread, where the sends are inline.
 	namespace editor
 	{
@@ -32,8 +36,16 @@ namespace ckagent
 
 		HWND MainFrame();
 
+		struct ModalBlock
+		{
+			std::string title;
+			std::string buttons;
+			std::string dismiss;
+		};
+
 		// A blocking modal must be nameable from anywhere, including a status line.
 		std::string HiddenModalTitle();
+		ModalBlock HiddenModal();
 		int FindMenuCommand(HMENU m, const std::string& want, int depth = 3);
 		HWND FindButtonByText(HWND root, const std::string& text);
 

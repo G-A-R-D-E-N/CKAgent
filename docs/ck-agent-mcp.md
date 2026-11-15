@@ -2,7 +2,7 @@
 
 > This copy ships with the CKAgent repository, and so do the CKPE anchor findings it cites
 > (`docs/ckpe-render-control.md`). The memory probes it names live in the GARDEN-Tools monorepo under
-> `tools/ck-surface-probe/`, because they read the editor from outside the process. Build steps are in the
+> `tools/`, because they read the editor from outside the process. Build steps are in the
 > repository `README.md`.
 
 Investigation into driving `CreationKit.exe` so an AI agent can operate the live editor the way a
@@ -20,7 +20,7 @@ Creation Kit work already installs, and it is the only thing that gives a plugin
 class layouts and jump targets. So the plan below leads with the in-process half instead of
 treating it as a later nicety.
 
-Everything labelled "measured" below came from `tools/ck-surface-probe/ck-surface-probe.ps1` run
+Everything labelled "measured" below came from `tools/ck-surface-probe.ps1` run
 against the installed editor, not from documentation.
 
 ## What is installed here
@@ -146,7 +146,7 @@ pinned target rather than a hopeful guess:
 ### The render control is *not* reachable from its window (measured)
 
 `TESRenderControl` has no singleton, so the first hypothesis was that the `MonitorClass` render
-window publishes its instance through `GWLP_USERDATA`. `tools/ck-surface-probe/render-control-probe.ps1`
+window publishes its instance through `GWLP_USERDATA`. `tools/render-control-probe.ps1`
 tested it and **refuted it**:
 
 - Every window's `GWLP_USERDATA` is readable, and the render window's object has a real
@@ -337,10 +337,10 @@ generated manifest has to be regenerated per CK build.
 
 ```powershell
 # attach to a running editor
-tools/ck-surface-probe/ck-surface-probe.ps1
+tools/ck-surface-probe.ps1
 
 # or start one, probe it, then stop what it started
-tools/ck-surface-probe/ck-surface-probe.ps1 -Launch -Seconds 120
+tools/ck-surface-probe.ps1 -Launch -Seconds 120
 ```
 
 Output goes to `.probe/ck-surface.txt`: window classes, the full menu ID tree, and the UI Automation
@@ -729,7 +729,7 @@ not thereby proved correct.
 
 ## Camera transform, measured (editor 1.11.246.0, cell open)
 
-`tools/ck-surface-probe/camera-pose-probe.ps1` reads the `NiCamera` behind
+`tools/camera-pose-probe.ps1` reads the `NiCamera` behind
 `BGSRenderWindowCamera+0x10` and locates its transforms by testing geometry, not by assuming an
 offset. With Andrew Station loaded it finds exactly three:
 
@@ -826,7 +826,7 @@ reports `rotate` from the camera's own node — the matrix `MoveLocal` moves alo
 `NiCamera` at `camera+0x10`. Measured on 1.11.246.0, the slave's rows are the node's rows shifted by one
 (node `r1, r2, r0`), and the tool's `rotationOffset` is the sum of the differences that shift implies —
 6.0 at the axis-aligned poses first measured, 6.4472 at a diagonal one, so the shift is the invariant and
-the number is not. `tools/ck-surface-probe/camera-tool-cross-check.ps1` asserts that
+the number is not. `tools/camera-tool-cross-check.ps1` asserts that
 relation, the rotation offset the tool reports and the translation both nodes share, so a decode error in
 the plugin fails a
 check instead of passing as a plausible pose. It needs the editor and the plugin running, so it stays a
@@ -836,7 +836,7 @@ The CKAgent repo carries the plugin half of this check as `tools/camera-layout.t
 `.github/workflows/camera-layout.yml` on every pull request, including two steps that drift the offset and
 the stride on purpose and fail if the test still passes.
 
-`tools/ck-surface-probe/camera-layout.test.ps1` guards this layout. It holds the measured offsets as
+`tools/camera-layout.test.ps1` guards this layout. It holds the measured offsets as
 expected values and fails if the plugin's constants drift from them (world `0x70`, translate
 `world+0x30`, scale `world+0x3C`, stride 4), if the plugin stops addressing columns through the
 stride, or if the probe starts decoding a different row width. With `-Live` it also runs the probe

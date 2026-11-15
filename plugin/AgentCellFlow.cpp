@@ -3,12 +3,15 @@
 #include <windows.h>
 #include <commctrl.h>
 
+#include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
+#include <EditorAPI/T/TES.h>
+
 #include "AgentCellFlow.h"
 #include "AgentEditorShared.h"
-#include "AgentEditorUi.h"
 
 namespace ckagent
 {
@@ -178,7 +181,7 @@ namespace ckagent
 		}
 	}
 
-	bool RunCellTool(const std::string& tool, const std::string& args,
+	bool RunCellTool(std::uintptr_t window, const std::string& tool, const std::string& args,
 		std::string& payload, std::string& errorCode, std::string& errorMessage)
 	{
 		using namespace editor;
@@ -188,7 +191,7 @@ namespace ckagent
 			std::string plugin = args;
 			bool makeActive = false;
 
-			// Constraint: an active file is what makes a master cell writable, so it is a separate request, not a tick.
+			// Constraint: an active file is what makes a master cell writable, so it is a separate request.
 			const std::size_t lastSpace = args.rfind(' ');
 			if (lastSpace != std::string::npos && Lower(args.substr(lastSpace + 1)) == "active")
 			{
@@ -215,14 +218,11 @@ namespace ckagent
 					errorMessage = "the editor has no window with a menu bar yet";
 					return false;
 				}
-				// Constraint: this build labels the item '&Data...', and it sits under File, so the path is used.
-				std::string pathError;
-				int id = editor::ResolveMenuPath(GetMenu(frame), { "File", "Data..." }, 0, pathError);
-				if (!id) id = editor::ResolveMenuPath(GetMenu(frame), { "File", "Data" }, 0, pathError);
+				const int id = FindMenuCommand(GetMenu(frame), "Data");
 				if (!id)
 				{
 					errorCode = "no_command";
-					errorMessage = pathError.empty() ? std::string("the File menu has no Data item") : pathError;
+					errorMessage = "the File menu has no Data item";
 					return false;
 				}
 				PostMessageW(frame, WM_COMMAND, MAKEWPARAM(id, 0), 0);
@@ -246,13 +246,11 @@ namespace ckagent
 			}
 
 			SelectListViewRow(list, row);
-
-			HWND activeButton = nullptr;
 			if (makeActive)
 			{
-				// Constraint: a plugin must be the selected row before the editor will accept it as the active file.
+				// Constraint: the row must be selected before the editor accepts it as the active file.
 				Sleep(200);
-				activeButton = FindButtonByText(dialog, "Set as Active File");
+				HWND activeButton = FindButtonByText(dialog, "Set as Active File");
 				if (!activeButton)
 				{
 					errorCode = "no_active_button";
@@ -265,7 +263,7 @@ namespace ckagent
 			}
 			else
 			{
-				// Constraint: a master file is loaded by its checkbox state image, so it is set rather than clicked.
+				// The checkbox is the state image, so it must be set rather than left to the click handler.
 				LVITEMW li{};
 				li.stateMask = LVIS_STATEIMAGEMASK;
 				li.state = INDEXTOSTATEIMAGEMASK(2);
@@ -277,10 +275,7 @@ namespace ckagent
 			if (!ok) ok = FindButtonByText(dialog, "&OK");
 			if (ok) PostMessageW(ok, BM_CLICK, 0, 0);
 
-			payload = "{\"stage\":" + std::string(makeActive ? "active" : "ticked") + ",\"plugin\":" + Quote(plugin) +
-				",\"row\":" + std::to_string(row) +
-				",\"activeButton\":" + (activeButton ? "true" : "false") +
-				",\"ok\":" + (ok ? "true" : "false") + "}";
+			payload = "{\"stage\":\"ticked\",\"row\":" + std::to_string(row) + ",\"ok\":" + (ok ? "true" : "false") + "}";
 			return true;
 		}
 
@@ -326,6 +321,32 @@ namespace ckagent
 			}
 
 			payload = "{\"total\":" + std::to_string(count) + ",\"matched\":" + std::to_string(matched) + ",\"rows\":[" + rows + "]}";
+			return true;
+		}
+
+		if (tool == "ui.cellclose")
+		{
+			// Constraint: File/Data is greyed while the render window holds a cell, so closing frees that slot.
+			if (!window)
+			{
+				errorCode = "window_unavailable";
+				errorMessage = "the render window is not resolved yet";
+				return false;
+			}
+
+			auto* slot = reinterpret_cast<std::uintptr_t*>(window + kCurrentCellOffset);
+			const std::uintptr_t previous = *slot;
+			if (!previous)
+			{
+				payload = "{\"closed\":false,\"wasLoaded\":false}";
+				return true;
+			}
+
+			*slot = 0;
+			char buf[220];
+			std::snprintf(buf, sizeof buf, "{\"closed\":%s,\"was\":\"0x%llX\"}",
+				*slot ? "false" : "true", static_cast<unsigned long long>(previous));
+			payload = buf;
 			return true;
 		}
 
@@ -399,5 +420,27 @@ namespace ckagent
 		errorCode = "unknown_tool";
 		errorMessage = tool;
 		return false;
+	}
+
+	Placement ReadPlacement(std::uintptr_t slot)
+	{
+		using TES = CKPE::Fallout4::EditorAPI::TES;
+
+		// Invariant: the editor's own table may not expose the slot, so the plugin assigns it once.
+		if (TES::Singleton.Empty())
+			TES::Singleton = slot;
+
+		Placement where;
+		TES* tes = TES::Singleton.GetSingleton();
+		if (!tes) return where;
+
+		where.hasSingleton = true;
+		where.empty = tes->Empty();
+		where.interior = tes->HasLoadedInterior();
+		const auto coords = tes->GetCurrentRendererCellCoordinates();
+		where.gridX = static_cast<int>(coords.X);
+		where.gridY = static_cast<int>(coords.Y);
+		where.hasWorldSpace = tes->worldSpace != nullptr;
+		return where;
 	}
 }

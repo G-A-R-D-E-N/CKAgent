@@ -43,6 +43,7 @@ add_library(CKAgentPlugin SHARED
   AgentNavmeshFindings.cpp
   AgentNavmeshRead.cpp
   AgentPlace.cpp
+  AgentWire.cpp
 )
 
 target_include_directories(CKAgentPlugin PRIVATE

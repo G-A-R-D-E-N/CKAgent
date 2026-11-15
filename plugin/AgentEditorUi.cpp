@@ -13,9 +13,9 @@
 
 #include "AgentCellFlow.h"
 #include "AgentEditorShared.h"
+#include "AgentEditorUi.h"
 #include "AgentNavmesh.h"
 #include "AgentPlace.h"
-#include "AgentEditorUi.h"
 #include "AgentUia.h"
 
 namespace ckagent
@@ -387,8 +387,8 @@ namespace ckagent
 			return s;
 		}
 
-		// A dialog must be described well enough to decide about it: owner, state and its buttons.
-		std::string ModalJson(HWND h)
+		// Invariant: a dialog is dismissed by caption, so the buttons are listed wherever it is reported.
+		std::string ButtonsJson(HWND h, int max)
 		{
 			std::string buttons;
 			int shown = 0;
@@ -399,9 +399,14 @@ namespace ckagent
 				if (caption.empty()) continue;
 				if (shown++) buttons += ",";
 				buttons += Quote(caption);
-				if (shown >= 6) break;
+				if (shown >= max) break;
 			}
+			return "[" + buttons + "]";
+		}
 
+		// A dialog must be described well enough to decide about it: owner, state and its buttons.
+		std::string ModalJson(HWND h)
+		{
 			HWND owner = GetWindow(h, GW_OWNER);
 			char handle[24];
 			char ownerHandle[24];
@@ -419,7 +424,7 @@ namespace ckagent
 			s += (owner && IsWindowEnabled(owner)) ? "true" : "false";
 			s += ",\"blocking\":";
 			s += IsHiddenModal(h) ? "true" : "false";
-			s += ",\"buttons\":[" + buttons + "]}";
+			s += ",\"buttons\":" + ButtonsJson(h, 6) + "}";
 			return s;
 		}
 
@@ -450,6 +455,38 @@ namespace ckagent
 			for (HWND h : TopWindows())
 				if (IsHiddenModal(h)) return U8(WinText(h));
 			return {};
+		}
+
+		// Invariant: the dismissal abandons the pending work, so it presses Cancel or Close, never OK.
+		std::string DismissCaption(HWND dialog)
+		{
+			const wchar_t* const safe[] = { L"Cancel", L"Close" };
+			for (int i = 0; i < 2; ++i)
+			{
+				HWND button = FindButtonByText(dialog, U8(safe[i]));
+				if (button && IsWindow(button) && IsWindowEnabled(button)) return U8(safe[i]);
+			}
+			return "WM_CLOSE";
+		}
+
+		// Invariant: a blocked caller is told which caption dismisses the dialog, not only its title.
+		ModalBlock HiddenModal()
+		{
+			ModalBlock out;
+			out.buttons = "[]";
+			for (HWND h : TopWindows())
+			{
+				if (!IsHiddenModal(h)) continue;
+				out.title = U8(WinText(h));
+				for (auto& ch : out.title)
+				{
+					if (ch == '"') ch = '\'';
+				}
+				out.buttons = ButtonsJson(h, 6);
+				out.dismiss = DismissCaption(h);
+				return out;
+			}
+			return out;
 		}
 
 		// --- menu (ids differ per build, so a command must be resolved by text) ---
@@ -592,10 +629,45 @@ namespace ckagent
 
 	}
 
-	bool RunEditorTool(const std::string& tool, const std::string& args, const void* cell,
+	namespace
+	{
+		// Constraint: the cell pointer is only taken when its page is committed, because a stale render window
+		// reads as garbage and both the navmesh and the placement tools dereference what they are given.
+		std::uintptr_t ReadLoadedCell(std::uintptr_t window)
+		{
+			if (!window) return 0;
+
+			const std::uintptr_t slot = window + kCurrentCellOffset;
+			MEMORY_BASIC_INFORMATION info{};
+			if (!VirtualQuery(reinterpret_cast<const void*>(slot), &info, sizeof info)) return 0;
+			if (info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) return 0;
+			return *reinterpret_cast<const std::uintptr_t*>(slot);
+		}
+	}
+
+	bool RunEditorTool(std::uintptr_t window, const std::string& tool, const std::string& args,
 		std::string& payload, std::string& errorCode, std::string& errorMessage)
 	{
 		using namespace editor;
+
+		// Constraint: navmesh and placement act on the loaded cell, so the pointer is read here, on the editor
+		// thread, and handed in; these verbs are routed through this entry so they answer like the rest.
+		if (tool.rfind("nav.", 0) == 0 || tool.rfind("place.", 0) == 0)
+		{
+			const void* cell = reinterpret_cast<const void*>(ReadLoadedCell(window));
+			if (tool.rfind("nav.", 0) == 0)
+				return RunNavmeshTool(tool, args, cell, payload, errorCode, errorMessage);
+			return RunPlaceTool(tool, args, cell, payload, errorCode, errorMessage);
+		}
+
+		// Constraint: the save dialog keeps its parts inside DirectUIHWND with no window handle, so this path
+		// is separate from the Win32 control path below and has its own two verbs.
+		if (tool.rfind("uia.", 0) == 0)
+		{
+			if (tool == "uia.save")
+				return uia::SaveByListItem(args, payload, errorCode, errorMessage);
+			return uia::AnswerFileDialog(args, payload, errorCode, errorMessage);
+		}
 
 		// Args must be space separated; a tool that requires free text takes the rest of the line.
 		std::vector<std::string> parts;
@@ -614,13 +686,6 @@ namespace ckagent
 
 		auto argText = [&](std::size_t index) -> std::string { return index < parts.size() ? parts[index] : std::string(); };
 		auto argInt = [&](std::size_t index, int fallback) -> int { return index < parts.size() ? std::atoi(parts[index].c_str()) : fallback; };
-
-		// Constraint: navmesh tools post the editor's menu commands, so they need this thread.
-		if (tool.rfind("nav.", 0) == 0)
-			return RunNavmeshTool(tool, args, cell, payload, errorCode, errorMessage);
-
-		if (tool.rfind("place.", 0) == 0)
-			return RunPlaceTool(tool, args, cell, payload, errorCode, errorMessage);
 
 		if (tool == "ui.windows")
 		{
@@ -875,71 +940,8 @@ namespace ckagent
 			return true;
 		}
 
-		        if (tool == "uia.answer")
-        {
-            // Constraint: the editor's save dialog keeps its name box inside DirectUI, so UI Automation fills it.
-            return ckagent::uia::AnswerFileDialog(args, payload, errorCode, errorMessage);
-        }
-
-        if (tool == "uia.save")
-        {
-            // This build exposes no value pattern on the name box, so the existing plugin is selected instead.
-            return ckagent::uia::SaveByListItem(args, payload, errorCode, errorMessage);
-        }
-
-        if (tool == "ui.type")
-        {
-            // Constraint: a file dialog's name box is a DirectUI element with no handle, so the name is typed at it.
-            HWND target = ToHwnd(argText(0));
-            if (!target || !IsWindow(target))
-            {
-                errorCode = "bad_hwnd";
-                errorMessage = "ui.type needs a live window as its first argument";
-                return false;
-            }
-
-            std::string text;
-            const std::size_t space = args.find(' ');
-            if (space != std::string::npos) text = args.substr(space + 1);
-
-            if (text.empty())
-            {
-                errorCode = "bad_args";
-                errorMessage = "ui.type needs text after the window handle";
-                return false;
-            }
-
-            // Constraint: the box lives inside DirectUIHWND with no handle of its own, so the only way in is the
-            // keyboard, and the editor owns the dialog, so raising it here is allowed.
-            const std::wstring wide = W(text);
-            SetForegroundWindow(target);
-            SetFocus(target);
-
-            std::vector<INPUT> inputs;
-            inputs.reserve(wide.size() * 2);
-            for (const wchar_t ch : wide)
-            {
-                INPUT down{ };
-                down.type = INPUT_KEYBOARD;
-                down.ki.wScan = ch;
-                down.ki.dwFlags = KEYEVENTF_UNICODE;
-                inputs.push_back(down);
-
-                INPUT up = down;
-                up.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
-                inputs.push_back(up);
-            }
-
-            const UINT sent = inputs.empty() ? 0 : SendInput(static_cast<UINT>(inputs.size()),
-                inputs.data(), sizeof(INPUT));
-
-            payload = "{\"typed\":" + std::to_string(wide.size()) + ",\"sent\":" + std::to_string(sent) +
-                ",\"text\":" + Quote(text) + "}";
-            return true;
-        }
-
-        if (tool == "ui.dismiss")
-        {
+		if (tool == "ui.dismiss")
+		{
 			// Constraint: the button must abandon the pending work, never apply it, so OK is never pressed.
 			HWND dialog = ToHwnd(argText(0));
 			if (!dialog || !IsWindow(dialog) || !IsClass(dialog, L"#32770"))
@@ -949,19 +951,25 @@ namespace ckagent
 				return false;
 			}
 
-			const wchar_t* const safe[] = { L"Cancel", L"Close" };
-			for (int i = 0; i < 2; ++i)
+			// Constraint: the caption comes from the same choice status reports, so the two cannot disagree.
+			const std::string caption = DismissCaption(dialog);
+			if (caption == "WM_CLOSE")
 			{
-				HWND button = FindButtonByText(dialog, U8(safe[i]));
-				if (!button || !IsWindowEnabled(button)) continue;
-				PostMessageW(button, BM_CLICK, 0, 0);
-				payload = DismissedJson(U8(safe[i]), argText(0));
+				PostMessageW(dialog, WM_CLOSE, 0, 0);
+				payload = DismissedJson(caption, argText(0));
 				return true;
 			}
 
-			// Constraint: a modal with no Cancel button must still end, and WM_CLOSE is its own Esc.
-			PostMessageW(dialog, WM_CLOSE, 0, 0);
-			payload = DismissedJson("WM_CLOSE", argText(0));
+			HWND button = FindButtonByText(dialog, caption);
+			if (!button || !IsWindowEnabled(button))
+			{
+				errorCode = "button_disabled";
+				errorMessage = "the dismissal button went away: " + caption;
+				return false;
+			}
+
+			PostMessageW(button, BM_CLICK, 0, 0);
+			payload = DismissedJson(caption, argText(0));
 			return true;
 		}
 
@@ -978,8 +986,8 @@ namespace ckagent
 			return true;
 		}
 
-		if (tool == "ui.dataload" || tool == "ui.cells" || tool == "ui.cellload")
-			return RunCellTool(tool, args, payload, errorCode, errorMessage);
+		if (tool == "ui.dataload" || tool == "ui.cells" || tool == "ui.cellload" || tool == "ui.cellclose")
+			return RunCellTool(window, tool, args, payload, errorCode, errorMessage);
 
 		errorCode = "unknown_tool";
 		errorMessage = tool;

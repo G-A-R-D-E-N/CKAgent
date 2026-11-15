@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
 using ModelContextProtocol.Server;
 
 namespace Garden.CkAgent;
@@ -493,7 +494,60 @@ public sealed record CellResult(
     string Status,
     string Code,
     string Message,
-    string? Payload);
+    string? Payload,
+    CellSummary? Cell = null);
+
+// The cell reply is a contract: these fields are read here so a load is confirmed from named values
+// rather than by trusting the raw payload, and a renamed plugin key fails this read instead of a caller.
+public sealed record CellSummary(
+    bool Loaded,
+    bool Readable,
+    string? EditorId,
+    string? FormId,
+    bool Interior,
+    int GridX,
+    int GridY,
+    bool HasWorldSpace)
+{
+    public static CellSummary? Parse(string payload)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+
+            return new CellSummary(
+                Bool(root, "loaded"),
+                Bool(root, "readable"),
+                Text(root, "editorId"),
+                Text(root, "formId"),
+                Bool(root, "interior"),
+                Number(root, "gridX"),
+                Number(root, "gridY"),
+                Bool(root, "hasWorldSpace"));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? Text(JsonElement root, string name)
+        => root.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static bool Bool(JsonElement root, string name)
+        => root.TryGetProperty(name, out JsonElement value) &&
+           (value.ValueKind == JsonValueKind.True ||
+            (value.ValueKind == JsonValueKind.String && bool.TryParse(value.GetString(), out bool parsed) && parsed));
+
+    private static int Number(JsonElement root, string name)
+        => root.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int parsed)
+            ? parsed
+            : 0;
+}
 
 // Cell selection must go through the plugin: the Cell View is a live control inside the editor process.
 [McpServerToolType]
@@ -545,7 +599,7 @@ public sealed class CellTools
         if (!BlockedEditor.TryCall(_plugin, "cell", out string payload, out string code, out string message))
             return new CellResult("error", code, message, null);
 
-        return new CellResult("ok", "ok", "cell", payload);
+        return new CellResult("ok", "ok", "cell", payload, CellSummary.Parse(payload));
     }
 }
 

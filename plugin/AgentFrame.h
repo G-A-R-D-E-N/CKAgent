@@ -29,6 +29,14 @@ namespace ckagent
 	bool RunFrameTool(const std::string& args, const FrameTarget& target, std::string& payload,
 		std::string& errorCode, std::string& errorMessage);
 
+	// Constraint: a rotate step must be reported from the scene row, so it can be compared with an orbit.
+	bool RunRotateTool(const std::string& args, const FrameTarget& target, std::string& payload,
+		std::string& errorCode, std::string& errorMessage);
+
+	// Constraint: the lens must be read and written through the slave NiCamera, which is what renders.
+	bool RunLensTool(const std::string& args, const FrameTarget& target, std::string& payload,
+		std::string& errorCode, std::string& errorMessage);
+
 	// Constraint: an aim must keep the camera where it is, so the caller sees the view it already chose.
 	bool RunAimTool(const std::string& args, const FrameTarget& target, std::string& payload,
 		std::string& errorCode, std::string& errorMessage);
