@@ -378,6 +378,114 @@ public sealed class SavePersistTests
         }
     }
 
+    /// Regression: mode=check answered `unknown` for the same silent report mode=apply now saves on, so telling a
+    /// clean cell from an unread one needed the raw lines. Check resolves through the gate apply saves on.
+    [Fact]
+    public void ACheckResolvesASilentReportWithTheGateApplySavesOn()
+    {
+        string[] wire = { "CALL 5 nav.check -> RPLY 5 OK {\"stage\":\"done\",\"pending\":false}" };
+        const string payload = "{\"stage\":\"done\",\"pending\":false,\"report\":{\"verdict\":\"clean\",\"errors\":0}}";
+        NavmeshExpected geometry = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+
+        NavmeshCheckOutcome outcome = NavmeshCheckGate.ResolveReport(payload, wire, geometry, "");
+
+        // The parse alone still sees nothing, which is why the gate, not the parser, decides.
+        Assert.Equal("unknown", outcome.Verdict.Code);
+        Assert.Equal("clean", outcome.Evidence.Code);
+        Assert.True(outcome.Evidence.Clean);
+        Assert.True(outcome.Evidence.Silent);
+        Assert.True(outcome.Evidence.Corroborated);
+        Assert.Contains("no findings", outcome.Evidence.Reason);
+
+        NavmeshCheckOutcome noDigests = NavmeshCheckGate.ResolveReport(payload, wire,
+            new NavmeshExpected(0x00240045, Array.Empty<NavmeshExpectedRecord>()), "");
+        Assert.False(noDigests.Evidence.Clean);
+        Assert.Equal("unknown", noDigests.Evidence.Code);
+        Assert.Contains("corroborate", noDigests.Evidence.Reason);
+    }
+
+    /// Regression: a check that wrote a finding must not read clean in either mode, and silence alone never passes.
+    [Fact]
+    public void ACheckStillRefusesADirtyReportAndASilentOneWithNoVerdict()
+    {
+        string[] reported = { "Navmesh 01001740 Cell DmndRadio01, Triangle 3 is degenerate and has an invalid area" };
+        NavmeshExpected geometry = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+
+        NavmeshCheckOutcome dirty = NavmeshCheckGate.ResolveReport("{\"report\":{\"verdict\":\"errors\"}}", reported,
+            geometry, "");
+        Assert.Equal("errors", dirty.Verdict.Code);
+        Assert.False(dirty.Evidence.Clean);
+        Assert.Equal("dirty", dirty.Evidence.Code);
+
+        string[] wire = { "CALL 5 nav.check -> RPLY 5 OK {\"stage\":\"done\"}" };
+        NavmeshCheckOutcome noVerdict = NavmeshCheckGate.ResolveReport("{\"stage\":\"done\"}", wire, geometry, "");
+        Assert.False(noVerdict.Evidence.Clean);
+        Assert.Equal("unknown", noVerdict.Evidence.Code);
+
+        NavmeshCheckOutcome mismatch = NavmeshCheckGate.ResolveReport("{\"report\":{\"verdict\":\"clean\"}}",
+            reported, geometry, "");
+        Assert.Equal("mismatch", mismatch.Evidence.Code);
+        Assert.False(mismatch.Evidence.Clean);
+    }
+
+    /// Regression: every apply put its mesh in a new NAVM form and left the replaced one behind, measured as six
+    /// forms on DmndRadio01 after four applies while the file only carried the last mesh. The run drops the form the
+    /// generation emptied, never a master record and never a form that still holds geometry.
+    [Fact]
+    public void RepeatedAppliesDoNotGrowTheCellsFormList()
+    {
+        NavmeshFormCount masterA = new(0x000C6F16, 0, 0);
+        NavmeshFormCount masterB = new(0x00002307, 0, 0);
+
+        // One apply in a session: the cell's own records plus the mesh, so nothing was superseded.
+        Assert.Empty(NavmeshApplyPrune.Superseded(new[] { masterA, masterB, new NavmeshFormCount(0x01001EDC, 21, 14) }));
+
+        // The second apply empties 01001EDC and builds 01002345 beside it.
+        NavmeshFormCount[] duringSecond =
+        {
+            masterA, masterB, new NavmeshFormCount(0x01001EDC, 0, 0), new NavmeshFormCount(0x01002345, 21, 14),
+        };
+
+        IReadOnlyList<NavmeshFormCount> drop = NavmeshApplyPrune.Superseded(duringSecond);
+        Assert.Single(drop);
+        Assert.Equal(0x01001EDCu, drop[0].FormId);
+
+        // Dropping it leaves the cell at its own records plus one mesh, so N applies do not grow the list.
+        Assert.Equal(3, duringSecond.Length - drop.Count);
+
+        // A third apply drops the second run's form, and still never a master record.
+        IReadOnlyList<NavmeshFormCount> third = NavmeshApplyPrune.Superseded(new[]
+        {
+            masterA, masterB, new NavmeshFormCount(0x01002345, 0, 0), new NavmeshFormCount(0x01002AAA, 7, 5),
+        });
+        Assert.Single(third);
+        Assert.Equal(0x01002345u, third[0].FormId);
+
+        // Two live meshes mean nothing is provably the replaced one, so nothing is offered.
+        Assert.Empty(NavmeshApplyPrune.Superseded(new[]
+        {
+            new NavmeshFormCount(0x01001EDC, 21, 14), new NavmeshFormCount(0x01002345, 7, 5),
+        }));
+    }
+
+    /// Regression: the form table the prune reads comes from nav.state, so a reply without one must offer nothing
+    /// rather than guess at ids that are not there.
+    [Fact]
+    public void ThePruneReadsOnlyTheNavmeshFormsTheStateReplyCarries()
+    {
+        const string state = "{\"navmesh\":{\"count\":2,\"forms\":[" +
+                             "{\"formId\":\"000C6F16\",\"type\":29,\"navmesh\":false,\"vertices\":9,\"triangles\":9}," +
+                             "{\"formId\":\"01001EDC\",\"type\":76,\"navmesh\":true,\"vertices\":21,\"triangles\":14}]}}";
+
+        IReadOnlyList<NavmeshFormCount> forms = NavmeshApplyPrune.ReadForms(state);
+
+        Assert.Single(forms);
+        Assert.Equal(0x01001EDCu, forms[0].FormId);
+        Assert.True(forms[0].HasGeometry);
+        Assert.Empty(NavmeshApplyPrune.ReadForms("{\"cell\":{}}"));
+        Assert.Empty(NavmeshApplyPrune.ReadForms(null));
+    }
+
     /// The geometry offsets live inside the NVNM subrecord's own data, which starts after the subrecord's
     /// six-byte signature and length, so a tamper measured from the record header would rewrite the wrong bytes.
     private static int NvnmAt(byte[] payload)

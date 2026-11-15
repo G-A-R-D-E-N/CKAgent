@@ -5,6 +5,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstddef>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -64,6 +65,9 @@ namespace ckagent
 		constexpr std::uint32_t kNavCoverEdgeShift = 16;
 		// Constraint: an area read must stay bounded, so it stops at 32 MiB of geometry.
 		constexpr std::size_t kMaxNavGeometryBytes = 32u * 1024u * 1024u;
+		// Constraint: the cell's navmesh list is the BSTArray the accessor reads, and its head sits after the item array
+		// at 0x78; the size is only written after the head has been proved to be that same array.
+		constexpr std::size_t kCellNavMeshesOffset = 0x78;
 
 		std::string HexId(std::uint32_t id)
 		{
@@ -546,6 +550,139 @@ namespace ckagent
 
 			payload = std::string("{\"stripped\":") + std::to_string(stripped) +
 				",\"verticesCleared\":" + std::to_string(vertices) + "}";
+			return true;
+		}
+
+		// Constraint: a Recast pass leaves the form it replaced in the cell's list with no geometry, so the list is
+		// shortened by id instead of keeping one idle placeholder per apply. A form still carrying geometry is refused.
+		bool PruneCellForms(const void* cell, const std::string& ids, std::string& payload,
+			std::string& errorCode, std::string& errorMessage)
+		{
+			auto* target = static_cast<EditorCell*>(const_cast<void*>(cell));
+			if (!target || !Readable(target, kCellReadable) || !target->IsNavMesh())
+			{
+				errorCode = "no_cell";
+				errorMessage = "no cell with a navmesh list is loaded, so there is no form to drop";
+				return false;
+			}
+
+			std::vector<std::uint32_t> wanted;
+			std::uint32_t value = 0;
+			int digits = 0;
+
+			for (char raw : ids)
+			{
+				const char c = raw;
+				const bool separator = c == ',';
+
+				if (!separator && !std::isspace(static_cast<unsigned char>(c)))
+				{
+					int digit = -1;
+					if (c >= '0' && c <= '9') digit = c - '0';
+					else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+					else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+
+					if (digit < 0 || digits == 8)
+					{
+						errorCode = "invalid_argument";
+						errorMessage = "nav.prune takes form ids of at most eight hex digits, separated by commas";
+						return false;
+					}
+
+					value = (value << 4) | static_cast<std::uint32_t>(digit);
+					++digits;
+					continue;
+				}
+
+				if (digits)
+				{
+					wanted.push_back(value);
+					value = 0;
+					digits = 0;
+				}
+			}
+
+			if (digits) wanted.push_back(value);
+
+			if (wanted.empty())
+			{
+				errorCode = "invalid_argument";
+				errorMessage = "nav.prune needs the form ids to drop, each as an eight digit hex id, separated by commas";
+				return false;
+			}
+
+			EditorForm** list = target->GetNavMeshes();
+			const std::uint32_t total = list ? target->GetNavMeshesCount() : 0;
+
+			if (!list || total == 0)
+			{
+				errorCode = "no_navmesh";
+				errorMessage = "the loaded cell lists no navmesh forms, so there is nothing to drop";
+				return false;
+			}
+
+			// Constraint: the size is only written through the array the accessor reads, so a layout change fails the
+			// call instead of shortening some other structure.
+			auto* array = *reinterpret_cast<std::uint8_t**>(reinterpret_cast<std::uint8_t*>(target) + kCellNavMeshesOffset);
+			if (!array || !Readable(array, kNavArraySizeOffset + sizeof(std::uint32_t)) ||
+				*reinterpret_cast<EditorForm***>(array) != list ||
+				*reinterpret_cast<std::uint32_t*>(array + kNavArraySizeOffset) != total)
+			{
+				errorCode = "navmesh_array_unreadable";
+				errorMessage = "the loaded cell's navmesh list is not the array this build reads, so no form was dropped";
+				return false;
+			}
+
+			std::string dropped;
+			std::string keptLive;
+			std::uint32_t keep = 0;
+
+			for (std::uint32_t i = 0; i < total; ++i)
+			{
+				EditorForm* form = list[i];
+				bool remove = false;
+
+				if (form && Readable(form, kNavReadable))
+				{
+					const std::uint32_t id = form->GetFormID();
+					bool selected = false;
+					for (std::uint32_t candidate : wanted) if (candidate == id) selected = true;
+
+					if (selected)
+					{
+						std::uint32_t vertices = 0;
+						std::uint32_t triangles = 0;
+						ReadNavArraySize(form, kNavVerticesOffset, vertices);
+						ReadNavArraySize(form, kNavTrianglesOffset, triangles);
+
+						// Constraint: a form that still carries geometry is the cell's mesh, so naming it is refused, not obeyed.
+						if (vertices || triangles)
+						{
+							if (!keptLive.empty()) keptLive += ",";
+							keptLive += Quote(HexId(id));
+						}
+						else
+						{
+							remove = true;
+							if (!dropped.empty()) dropped += ",";
+							dropped += Quote(HexId(id));
+						}
+					}
+				}
+
+				if (remove) continue;
+				if (keep != i) list[keep] = form;
+				++keep;
+			}
+
+			if (keep != total)
+			{
+				for (std::uint32_t i = keep; i < total; ++i) list[i] = nullptr;
+				*reinterpret_cast<std::uint32_t*>(array + kNavArraySizeOffset) = keep;
+			}
+
+			payload = "{\"pruned\":[" + dropped + "],\"keptLive\":[" + keptLive +
+				"],\"forms\":" + std::to_string(keep) + "}";
 			return true;
 		}
 	}

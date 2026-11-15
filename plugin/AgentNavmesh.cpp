@@ -855,6 +855,20 @@ namespace ckagent
 			return navmeshread::StripCellGeometry(cell, payload, errorCode, errorMessage);
 		}
 
+		if (tool == "nav.prune")
+		{
+			// Constraint: dropping a form shortens the cell's navmesh list, so it needs the same confirm token as the writers.
+			if (!Confirmed(args))
+			{
+				errorCode = "confirmation_required";
+				errorMessage = "nav.prune drops the named navmesh forms from the loaded cell; repeat with "
+					"'<ids> confirm' when that is intended";
+				return false;
+			}
+
+			return navmeshread::PruneCellForms(cell, WithoutConfirm(args), payload, errorCode, errorMessage);
+		}
+
 		if (tool == "nav.commands")
 		{
 			std::vector<NavCommand> commands;

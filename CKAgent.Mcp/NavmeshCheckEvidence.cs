@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace Garden.CkAgent;
@@ -11,6 +12,9 @@ public sealed record NavmeshCheckEvidence(
     bool Corroborated,
     string Reason);
 
+/// One report read once: the parse of its lines and what the gate made of it.
+public sealed record NavmeshCheckOutcome(NavmeshVerdict Verdict, NavmeshCheckEvidence Evidence);
+
 // Regression: the Creation Kit's Check NavMeshes writes nothing for a cell with no findings, and the report window then
 // holds only this tool's own CALL/RPLY lines. That used to parse as `unknown` and every clean cell was refused as
 // `verdict_mismatch` against the plugin's `clean`. Silence is a clean signal only when the plugin's own classifier
@@ -21,6 +25,46 @@ public static class NavmeshCheckGate
         new(@"^(CALL|RPLY) \d+ ", RegexOptions.CultureInvariant);
 
     public static bool IsProtocolLine(string line) => ProtocolLine.IsMatch(line.Trim());
+
+    /// Invariant: mode=check and mode=apply read one report through this resolver, so a silent check cannot read
+    /// clean in one answer and unknown in the other.
+    public static NavmeshCheckOutcome ResolveReport(string? pluginPayload, IReadOnlyList<string> lines,
+                                                    NavmeshExpected? geometry, string? blockedBy)
+    {
+        NavmeshVerdict verdict = NavmeshVerdictParser.Parse(lines);
+        bool parsedClean = verdict.Code == "clean";
+        NavmeshCheckEvidence evidence = Resolve(PluginVerdict(pluginPayload), verdict, lines, parsedClean, geometry,
+            blockedBy);
+
+        return new NavmeshCheckOutcome(verdict, evidence);
+    }
+
+    /// The verdict the plugin classified its own check with, or null when the payload carries none.
+    public static string? PluginVerdict(string? payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload)) return null;
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(payload);
+            if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
+
+            if (document.RootElement.TryGetProperty("verdict", out JsonElement top) &&
+                top.ValueKind == JsonValueKind.String)
+                return top.GetString();
+
+            if (document.RootElement.TryGetProperty("report", out JsonElement report) &&
+                report.ValueKind == JsonValueKind.Object &&
+                report.TryGetProperty("verdict", out JsonElement inner) &&
+                inner.ValueKind == JsonValueKind.String)
+                return inner.GetString();
+        }
+        catch (JsonException)
+        {
+        }
+
+        return null;
+    }
 
     /// The window carries nothing but this tool's own pipe echo, so the editor itself wrote no check output.
     public static bool OnlyProtocolLines(IReadOnlyList<string> lines)

@@ -15,6 +15,8 @@ public sealed record NavmeshResult(
     public NavmeshVerdict? Verdict { get; init; }
 
     public NavmeshPersistence? Persistence { get; init; }
+
+    public NavmeshCheckEvidence? Check { get; init; }
 }
 
 // Constraint: the pass leaves its verdict in the CKPE log, so that is what is read back.
@@ -214,6 +216,8 @@ public sealed partial class NavmeshTools
                 string payload = "";
                 string code = "";
                 string message = "";
+                bool pruned = false;
+                string pruneJson = "null";
 
                 for (int tick = 0; tick < TickLimit; tick++)
                 {
@@ -229,6 +233,14 @@ public sealed partial class NavmeshTools
 
                     if (!Pending(payload))
                         break;
+
+                    // Constraint: the generation emptied the form it replaced, so that placeholder is dropped before the
+                    // check and the read-back look at the cell - otherwise every apply leaves one more form behind.
+                    if (!pruned && Stage(payload) == "finalize")
+                    {
+                        pruned = true;
+                        pruneJson = PruneSupersededForms();
+                    }
 
                     if (tick == TickLimit - 1)
                     {
@@ -305,6 +317,7 @@ public sealed partial class NavmeshTools
                                       reason = evidence.Reason,
                                       geometryRecords = checkGeometry?.Records.Count ?? 0
                                   }) +
+                                  ",\"pruned\":" + pruneJson +
                                   ",\"pluginVerdict\":" + (reported is null ? "null" : JsonSerializer.Serialize(reported)) +
                                   ",\"save\":" + saveOutcomeJson +
                                   ",\"persistence\":" + persistenceJson +
@@ -312,7 +325,8 @@ public sealed partial class NavmeshTools
                 return new NavmeshResult("ok", resultCode, outcome, envelope, _paths.CkpeLogPath, null)
                 {
                     Verdict = verdict,
-                    Persistence = persistence
+                    Persistence = persistence,
+                    Check = evidence
                 };
             }
 
@@ -947,37 +961,49 @@ public sealed partial class NavmeshTools
         }
 
         IReadOnlyList<string> lines = ReportLines(payload) ?? ReadAll(offset);
-        NavmeshVerdict verdict = NavmeshVerdictParser.Parse(lines);
-        return new NavmeshResult("ok", verdict.Code, verdict.Summary, payload, _paths.CkpeLogPath, null)
+
+        // Constraint: a check that found nothing writes nothing, so check resolves the report with the same gate apply
+        // saves on rather than answering unknown for the silence apply accepts.
+        NavmeshCheckOutcome outcome = NavmeshCheckGate.ResolveReport(payload, lines, ReadLoadedGeometry(),
+            BlockedEditor.BlockingTitle(_plugin));
+
+        return new NavmeshResult("ok", outcome.Evidence.Code, outcome.Evidence.Reason, payload, _paths.CkpeLogPath, null)
         {
-            Verdict = verdict
+            Verdict = outcome.Verdict,
+            Check = outcome.Evidence
         };
     }
 
-    // Constraint: the plugin classifies its own check, so apply reports that verdict rather than only its own parse.
-    private static string? PluginVerdict(string payload)
+    // Constraint: a generation puts its mesh in a new form and empties the one it replaced, so the run drops that
+    // placeholder while the check still has to classify the cell, instead of leaving it beside the mesh.
+    private string PruneSupersededForms()
     {
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(payload);
-            if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
+        if (!BlockedEditor.TryCall(_plugin, "nav.state", out string state, out _, out _)) return "null";
 
-            if (document.RootElement.TryGetProperty("verdict", out JsonElement top) &&
-                top.ValueKind == JsonValueKind.String)
-                return top.GetString();
+        IReadOnlyList<NavmeshFormCount> drop = NavmeshApplyPrune.Superseded(NavmeshApplyPrune.ReadForms(state));
+        if (drop.Count == 0) return "{\"ids\":[],\"posted\":false}";
 
-            if (document.RootElement.TryGetProperty("report", out JsonElement report) &&
-                report.ValueKind == JsonValueKind.Object &&
-                report.TryGetProperty("verdict", out JsonElement inner) &&
-                inner.ValueKind == JsonValueKind.String)
-                return inner.GetString();
-        }
-        catch (JsonException)
+        string ids = "";
+        string listed = "";
+
+        foreach (NavmeshFormCount form in drop)
         {
+            if (ids.Length > 0) ids += ",";
+            if (listed.Length > 0) listed += ",";
+
+            ids += form.FormId.ToString("X8");
+            listed += "\"" + form.FormId.ToString("X8") + "\"";
         }
 
-        return null;
+        bool posted = BlockedEditor.TryCall(_plugin, $"nav.prune {ids} confirm", out string reply, out _,
+            out string failure);
+
+        return "{\"ids\":[" + listed + "],\"posted\":" + (posted ? "true" : "false") +
+               ",\"reply\":" + JsonSerializer.Serialize(posted ? reply : failure) + "}";
     }
+
+    // Constraint: the plugin classifies its own check, so apply reports that verdict rather than only its own parse.
+    private static string? PluginVerdict(string payload) => NavmeshCheckGate.PluginVerdict(payload);
 
     // Constraint: the reply carries the lines the check itself wrote, so the verdict never races a log re-read.
     private static IReadOnlyList<string>? ReportLines(string payload)
