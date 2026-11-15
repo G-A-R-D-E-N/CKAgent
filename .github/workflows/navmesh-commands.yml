@@ -14,7 +14,9 @@ jobs:
   # test. CKPE's own DLL build is a separate MSVC solution, so every plugin source is compiled against the public
   # CKPE headers here; linking the DLL still needs a built CKPE, which the editor machine has.
   plugin:
-    runs-on: windows-latest
+    # Pinned to the image whose MSVC is the one the plugin is built and shipped with: windows-latest now
+    # carries VS2026, which is not the generator this project targets.
+    runs-on: windows-2022
 
     steps:
       - uses: actions/checkout@v4

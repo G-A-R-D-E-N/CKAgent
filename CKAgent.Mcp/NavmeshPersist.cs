@@ -61,7 +61,7 @@ public static class NavmeshPersist
     /// Constraint: a save is not observable without a before-image, so the tool snapshots Data first and watches it.
     public static IReadOnlyDictionary<string, (long Length, DateTime Modified)> Snapshot(string dataDirectory)
     {
-        var seen = new Dictionary<string, (long, DateTime)>(StringComparer.OrdinalIgnoreCase);
+        var seen = new Dictionary<string, (long Length, DateTime Modified)>(StringComparer.OrdinalIgnoreCase);
         if (!Directory.Exists(dataDirectory)) return seen;
 
         foreach (string path in Directory.EnumerateFiles(dataDirectory))
@@ -90,7 +90,7 @@ public static class NavmeshPersist
                     if (!IsPlugin(path)) continue;
 
                     var info = new FileInfo(path);
-                    var now = (info.Length, info.LastWriteTimeUtc);
+                    var now = (Length: info.Length, Modified: info.LastWriteTimeUtc);
 
                     if (!before.TryGetValue(path, out var was)) return path;
                     if (was.Length != now.Length || was.Modified != now.Modified) return path;
