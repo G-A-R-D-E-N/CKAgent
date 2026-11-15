@@ -27,22 +27,24 @@ jobs:
         run: dotnet build CKAgent.Mcp/CKAgent.Mcp.csproj -c Release
 
   # The suite drives the pipe seam with canned replies and the save verdict with a throwaway install, so it
-  # runs without an editor. xunit v3 is an executable here because VSTest cannot start a testhost for it.
+  # runs with no editor. The SDK 10 is required: global.json selects its native Microsoft.Testing.Platform
+  # mode for dotnet test, which is how the xunit v3 executable gets run and reported as a test run.
   tests:
     runs-on: windows-latest
 
     steps:
       - uses: actions/checkout@v4
 
+      # 8.0 for the net8.0 the projects target, 10.0 for the dotnet test runner that global.json selects.
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: The pipe seam, the save verdict and the navmesh check pass
         shell: pwsh
-        run: |
-          dotnet build CKAgent.Mcp.Tests/CKAgent.Mcp.Tests.csproj -c Release
-          ./CKAgent.Mcp.Tests/bin/Release/net8.0/CKAgent.Mcp.Tests.exe
+        run: dotnet test CKAgent.Mcp.Tests/CKAgent.Mcp.Tests.csproj -c Release
 
   commands:
     runs-on: windows-latest

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Constraint: xunit v3, because VSTest cannot start a testhost on this machine even for an empty project. -->
+  <!-- Constraint: xunit v3 is an executable, and the SDK 10 native Microsoft.Testing.Platform mode of
+       dotnet test is selected in global.json, so the suite runs without a VSTest testhost. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <OutputType>Exe</OutputType>
@@ -8,8 +9,6 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <!-- Constraint: VSTest cannot start a testhost here, so dotnet test has to use the xunit v3 runner itself. -->
-    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
   </PropertyGroup>
 
   <ItemGroup>
