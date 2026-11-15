@@ -273,43 +273,19 @@ public sealed partial class NavmeshTools
                 }
                 else
                 {
-                    // Constraint: the editor writes whichever file it has open, so Data is snapshotted first and
-                    // the file that changes is the one read back.
-                    IReadOnlyDictionary<string, (long Length, DateTime Modified)> beforeSave =
-                        NavmeshPersist.Snapshot(_paths.DataDirectory);
+                    (persistence, saveOutcomeJson) = SaveAndVerify(save_timeout_seconds);
+                    persistenceJson = JsonSerializer.Serialize(persistence, EnvelopeJson);
 
-                    if (BlockedEditor.TryCall(_plugin, "nav.save confirm", out string saved,
-                                              out string saveCode, out string saveMessage))
+                    if (persistence.Persisted)
                     {
-                        saveOutcomeJson = saved;
-
-                        string? written = NavmeshPersist.WaitForChange(beforeSave, _paths.DataDirectory,
-                            Math.Clamp(save_timeout_seconds, 5, 120) * 1000);
-
-                        persistence = written is null
-                            ? NavmeshPersistence.Failed("save_not_written",
-                                "the check was clean and File/Save was posted, but no plugin in Data changed, so " +
-                                "nothing on disk holds this mesh")
-                            : VerifyLoadedCell(written);
-
-                        persistenceJson = JsonSerializer.Serialize(persistence, EnvelopeJson);
-
-                        if (persistence.Persisted)
-                        {
-                            outcome = $"{verdict.Summary}, so the cell was saved and read back: {persistence.Message}";
-                            resultCode = "saved";
-                        }
-                        else
-                        {
-                            outcome = $"{verdict.Summary}, but the cell is not persisted ({persistence.Code}): " +
-                                      $"{persistence.Message}";
-                            resultCode = persistence.Code;
-                        }
+                        outcome = $"{verdict.Summary}, so the cell was saved and read back: {persistence.Message}";
+                        resultCode = "saved";
                     }
                     else
                     {
-                        outcome = $"the check reported no failure, but the save failed ({saveCode}): {saveMessage}";
-                        resultCode = "save_failed";
+                        outcome = $"{verdict.Summary}, but the cell is not persisted ({persistence.Code}): " +
+                                  $"{persistence.Message}";
+                        resultCode = persistence.Code;
                     }
                 }
 
@@ -383,13 +359,13 @@ public sealed partial class NavmeshTools
 
                 // Constraint: reading the counts is not a change, so it needs no confirm token.
                 if (action == "status")
-                    return CoverStatus(max_rows);
+                    return CoverStatus(max_rows, save, save_timeout_seconds);
 
                 if (!confirm)
                     return Refused("mode=cover changes the loaded cell's cover data; repeat with confirm=true " +
                                    "when that is intended");
 
-                return Cover(action, max_rows, wait_seconds);
+                return Cover(action, max_rows, wait_seconds, save, save_timeout_seconds);
             }
 
             default:
@@ -591,21 +567,61 @@ public sealed partial class NavmeshTools
         }
     }
 
+    // Constraint: every mode that computes navmesh or cover geometry persists through this one step, so no mode
+    // can report a save it never made and no mode can leave the file for the user to write by hand.
+    private (NavmeshPersistence Persistence, string SaveJson) SaveAndVerify(int timeoutSeconds)
+    {
+        // Constraint: the editor writes whichever file it has open, so Data is snapshotted first and the file
+        // that changes is the one read back.
+        IReadOnlyDictionary<string, (long Length, DateTime Modified)> before = NavmeshPersist.Snapshot(_paths.DataDirectory);
+
+        if (!BlockedEditor.TryCall(_plugin, "nav.save confirm", out string posted, out string code, out string message))
+        {
+            return (NavmeshPersistence.Failed("save_failed",
+                $"the editor's File/Save could not be posted: {message}"), "null");
+        }
+
+        string? written = NavmeshPersist.WaitForChange(before, _paths.DataDirectory,
+            Math.Clamp(timeoutSeconds, 5, 120) * 1000);
+
+        NavmeshPersistence persistence = written is null
+            ? NavmeshPersistence.Failed("save_not_written",
+                "File/Save was posted, but no plugin in Data changed, so nothing on disk holds this mesh")
+            : VerifyLoadedCell(written);
+
+        return (persistence, posted);
+    }
+
     // Constraint: the cover commands report nothing themselves, so their effect is read from the counts.
     // Constraint: a cover pass computes on the editor thread, so its counts are read on a later call rather than inline.
-    private NavmeshResult CoverStatus(int maxRows)
+    private NavmeshResult CoverStatus(int maxRows, bool save, int timeoutSeconds)
     {
         string? counts = CoverState(out string error);
         if (counts is null)
             return new NavmeshResult("error", "state_unreadable",
                 "the loaded cell's cover could not be read: " + error, null, null, null);
 
-        return new NavmeshResult("ok", "status",
-            "triangles with cover: " + CoverAnyText(counts),
-            "{\"cover\":" + counts + "}", _paths.CkpeLogPath, null);
+        string summary = "triangles with cover: " + CoverAnyText(counts);
+        if (!save)
+            return new NavmeshResult("ok", "status", summary + "; save=false, so nothing was written",
+                "{\"cover\":" + counts + "}", _paths.CkpeLogPath, null);
+
+        // Constraint: this call is how a run that outlasted its budget is finished, so it persists the pass it reads.
+        (NavmeshPersistence persistence, string saveJson) = SaveAndVerify(timeoutSeconds);
+
+        string envelope = "{\"cover\":" + counts + ",\"save\":" + saveJson +
+                          ",\"persistence\":" + JsonSerializer.Serialize(persistence, EnvelopeJson) + "}";
+
+        if (!persistence.Persisted)
+            return new NavmeshResult("error", persistence.Code,
+                summary + $", but the cell is not persisted ({persistence.Code}): {persistence.Message}",
+                envelope, _paths.CkpeLogPath, null);
+
+        return new NavmeshResult("ok", "saved", summary + ", saved and read back: " + persistence.Message,
+            envelope, _paths.CkpeLogPath, null);
     }
 
-    private NavmeshResult Cover(string action, int maxRows, int waitSeconds)
+    private NavmeshResult Cover(string action, int maxRows, int waitSeconds, bool save, int timeoutSeconds)
     {
         string caption = action switch
         {
@@ -661,13 +677,38 @@ public sealed partial class NavmeshTools
         if (busy)
             return new NavmeshResult("ok", "posted",
                 $"{caption} posted and the editor is still computing it ({elapsed / 1000}s); triangles with cover " +
-                $"before: {CoverAnyText(before)} - call mode=cover cover=status for the counts once it is idle",
+                $"before: {CoverAnyText(before)} - call mode=cover cover=status once it is idle, which reads the " +
+                "counts and saves the cell",
                 envelope, _paths.CkpeLogPath, ReadAfter(offset, rows));
 
-        return new NavmeshResult("ok", "ok",
-            $"{caption} finished in {elapsed / 1000}s; triangles with cover: {CoverAnyText(before)} before, " +
-            $"{CoverAnyText(after)} after",
-            envelope, _paths.CkpeLogPath, ReadAfter(offset, rows));
+        string finished = $"{caption} finished in {elapsed / 1000}s; triangles with cover: {CoverAnyText(before)} " +
+                          $"before, {CoverAnyText(after)} after";
+
+        if (!save)
+            return new NavmeshResult("ok", "ok", finished + "; save=false, so the cover is still only in memory",
+                envelope, _paths.CkpeLogPath, ReadAfter(offset, rows));
+
+        // Constraint: cover lives in the cell's arrays until the file is written, so a finished pass goes through the
+        // same save and read-back step as apply and cannot report done without a matching file.
+        (NavmeshPersistence persistence, string saveJson) = SaveAndVerify(timeoutSeconds);
+        envelope = envelope[..^1] + ",\"save\":" + saveJson +
+                   ",\"persistence\":" + JsonSerializer.Serialize(persistence, EnvelopeJson) + "}";
+
+        (string status, string verdictCode, string verdictMessage) = CoverVerdict(persistence, finished);
+        return new NavmeshResult(status, verdictCode, verdictMessage, envelope, _paths.CkpeLogPath, ReadAfter(offset, rows));
+    }
+
+    /// Invariant: a finished cover pass reports done only when the read-back it carries is persisted, so the
+    /// reply's code and the file on disk cannot disagree. It is separate from the editor so a test can drive it.
+    public static (string Status, string Code, string Message) CoverVerdict(NavmeshPersistence persistence, string finished)
+    {
+        if (!persistence.Persisted)
+        {
+            return ("error", persistence.Code,
+                finished + $", but the cell is not persisted ({persistence.Code}): {persistence.Message}");
+        }
+
+        return ("ok", "saved", finished + ", saved and read back: " + persistence.Message);
     }
 
     // Constraint: each cover command maps to one live caption and answers nothing, so its effect is read back.

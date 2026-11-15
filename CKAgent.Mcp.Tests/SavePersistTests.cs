@@ -1,3 +1,5 @@
+using System.IO.Compression;
+
 using Garden.CkAgent;
 
 namespace CKAgent.Mcp.Tests;
@@ -96,7 +98,16 @@ public sealed class SavePersistTests
         Assert.Equal(new[] { 242, 113, 79, 21 }, meshes.Select(mesh => mesh.Vertices).ToArray());
         Assert.Equal(new[] { 289, 127, 91, 22 }, meshes.Select(mesh => mesh.Triangles).ToArray());
 
-        NavmeshPersistence persisted = NavmeshPersist.Verify(SavedPlugin(), new NavmeshExpected(0x00240045, 4, 455, 529));
+        Assert.All(meshes, mesh => Assert.NotNull(mesh.VertexDigest));
+        Assert.All(meshes, mesh => Assert.NotNull(mesh.TriangleDigest));
+        Assert.Equal(4, meshes.Select(mesh => mesh.VertexDigest).Distinct().Count());
+
+        NavmeshExpected expected = NavmeshPersist.Expect(report, 0x00240045);
+        Assert.Equal(4, expected.Records.Count);
+        Assert.Equal(455, expected.Records.Sum(record => record.Vertices));
+        Assert.Equal(529, expected.Records.Sum(record => record.Triangles));
+
+        NavmeshPersistence persisted = NavmeshPersist.Verify(SavedPlugin(), expected);
 
         Assert.True(persisted.Persisted);
         Assert.Equal("persisted", persisted.Code);
@@ -107,18 +118,95 @@ public sealed class SavePersistTests
         Assert.Equal(529, persisted.ReadBack.Triangles);
     }
 
-    /// Regression: a mesh left in memory reads as the file's stale counts, so the comparison has to fail on them
-    /// instead of accepting "the file changed".
+    /// The digest is the contract between the plugin and this reader, so the vector is pinned here as it is in
+    /// NavmeshDigest.h; a drift on either side has to fail a check rather than a save verdict.
     [Fact]
-    public void AFileWhoseGeometryDiffersFromTheBuildIsNotReportedPersisted()
+    public void TheGeometryDigestIsThePinnedFnv1aVector()
     {
-        NavmeshPersistence mismatch = NavmeshPersist.Verify(SavedPlugin(), new NavmeshExpected(0x00240045, 4, 455, 528));
+        Assert.Equal("e71fa2190541574b", NavmeshPersist.Digest("abc"u8));
+        Assert.Equal("cbf29ce484222325", NavmeshPersist.Digest(ReadOnlySpan<byte>.Empty));
+    }
 
-        Assert.False(mismatch.Persisted);
-        Assert.Equal("readback_mismatch", mismatch.Code);
-        Assert.Contains("455 vertices", mismatch.Message);
-        Assert.Equal(528, mismatch.Expected!.Triangles);
-        Assert.Equal(529, mismatch.ReadBack!.Triangles);
+    /// Regression: a triangle index the file holds but the editor did not build changes no count, so a totals
+    /// comparison read it as delivered. The verdict has to name the record whose indices differ.
+    [Fact]
+    public void ATamperedTriangleIndexIsReportedAsATriangleIndexMismatchForThatRecord()
+    {
+        NavmeshExpected expected = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+
+        string tampered = Tamper(0x01000FA3, payload =>
+        {
+            int vertices = BitConverter.ToInt32(payload, 16);
+            int trianglesAt = 20 + vertices * 12 + 4;
+            ushort index = BitConverter.ToUInt16(payload, trianglesAt + 2);
+            BitConverter.GetBytes((ushort)((index + 1) % vertices)).CopyTo(payload, trianglesAt + 2);
+        });
+
+        try
+        {
+            NavmeshPersistence verdict = NavmeshPersist.Verify(tampered, expected);
+
+            Assert.False(verdict.Persisted);
+            Assert.Equal("triangle_index_mismatch", verdict.Code);
+            Assert.Contains("0x01000FA3", verdict.Message);
+            Assert.DoesNotContain("0x01000FA4", verdict.Message);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(tampered)!, true);
+        }
+    }
+
+    /// Regression: moving a vertex keeps every count, so only the positions themselves can catch it.
+    [Fact]
+    public void AShiftedVertexIsReportedAsAVertexMismatchForThatRecord()
+    {
+        NavmeshExpected expected = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+
+        string tampered = Tamper(0x01000FA5, payload =>
+        {
+            float x = BitConverter.ToSingle(payload, 20);
+            BitConverter.GetBytes(x + 0.5f).CopyTo(payload, 20);
+        });
+
+        try
+        {
+            NavmeshPersistence verdict = NavmeshPersist.Verify(tampered, expected);
+
+            Assert.False(verdict.Persisted);
+            Assert.Equal("vertex_mismatch", verdict.Code);
+            Assert.Contains("0x01000FA5", verdict.Message);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(tampered)!, true);
+        }
+    }
+
+    /// A record the editor built but the file does not carry is short, and the verdict names which one.
+    [Fact]
+    public void ARecordTheFileDoesNotCarryIsReportedAsGeometryShort()
+    {
+        NavmeshExpected original = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+        var grown = new NavmeshExpected(original.CellFormId, original.Records
+            .Append(new NavmeshExpectedRecord(0x01000FA7, 12, 10, "0", "0"))
+            .ToList());
+
+        NavmeshPersistence missing = NavmeshPersist.Verify(SavedPlugin(), grown);
+
+        Assert.False(missing.Persisted);
+        Assert.Equal("geometry_short", missing.Code);
+        Assert.Contains("0x01000FA7", missing.Message);
+
+        var shrunk = new NavmeshExpected(original.CellFormId, original.Records
+            .Select(record => record.NavmFormId == 0x01000FA4 ? record with { Triangles = record.Triangles + 1 } : record)
+            .ToList());
+
+        NavmeshPersistence shorted = NavmeshPersist.Verify(SavedPlugin(), shrunk);
+
+        Assert.False(shorted.Persisted);
+        Assert.Equal("geometry_short", shorted.Code);
+        Assert.Contains("0x01000FA4", shorted.Message);
     }
 
     /// Regression: the editor can be left holding a build for a cell that its Save never wrote, so a plugin
@@ -126,7 +214,8 @@ public sealed class SavePersistTests
     [Fact]
     public void ACellTheSavedPluginDoesNotCarryIsNotReportedPersisted()
     {
-        NavmeshPersistence missing = NavmeshPersist.Verify(SavedPlugin(), new NavmeshExpected(0x00172297, 3, 42, 34));
+        NavmeshPersistence missing = NavmeshPersist.Verify(SavedPlugin(),
+            new NavmeshExpected(0x00172297, new[] { new NavmeshExpectedRecord(0x01000FA3, 242, 289, "0", "0") }));
 
         Assert.False(missing.Persisted);
         Assert.Equal("cell_missing", missing.Code);
@@ -139,12 +228,114 @@ public sealed class SavePersistTests
     {
         string absent = Path.Combine(AppContext.BaseDirectory, "Fixtures", "NotSaved.esp");
 
-        NavmeshPersistence nothing = NavmeshPersist.Verify(absent, new NavmeshExpected(0x00240045, 4, 455, 529));
+        NavmeshPersistence nothing = NavmeshPersist.Verify(absent,
+            NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045));
 
         Assert.False(nothing.Persisted);
         Assert.Equal("readback_unavailable", nothing.Code);
         Assert.Null(nothing.ReadBack);
         Assert.Empty(NavmeshPersist.Snapshot(Path.Combine(AppContext.BaseDirectory, "no-such-data")));
+    }
+
+    /// The cover path reaches its verdict through this function, so a cover run that finished over a file whose
+    /// geometry differs reports the read-back's code instead of done. Driven with real read-backs, no editor.
+    [Fact]
+    public void ACoverRunCannotBeDoneOnAReadBackThatDoesNotMatch()
+    {
+        NavmeshExpected expected = NavmeshPersist.Expect(NavmeshPersist.Read(SavedPlugin()), 0x00240045);
+
+        NavmeshPersistence persisted = NavmeshPersist.Verify(SavedPlugin(), expected);
+        (string doneStatus, string doneCode, string doneMessage) =
+            NavmeshTools.CoverVerdict(persisted, "Find Cover Edges finished in 4s");
+
+        Assert.Equal("ok", doneStatus);
+        Assert.Equal("saved", doneCode);
+        Assert.Contains("saved and read back", doneMessage);
+
+        string tampered = Tamper(0x01000FA6, payload =>
+        {
+            int vertices = BitConverter.ToInt32(payload, 16);
+            int trianglesAt = 20 + vertices * 12 + 4;
+            BitConverter.GetBytes((ushort)0xFFFF).CopyTo(payload, trianglesAt);
+        });
+
+        try
+        {
+            NavmeshPersistence mismatched = NavmeshPersist.Verify(tampered, expected);
+            (string failedStatus, string failedCode, string failedMessage) =
+                NavmeshTools.CoverVerdict(mismatched, "Find Cover Edges finished in 4s");
+
+            Assert.Equal("error", failedStatus);
+            Assert.Equal("triangle_index_mismatch", failedCode);
+            Assert.Contains("0x01000FA6", failedMessage);
+            Assert.Contains("not persisted", failedMessage);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(tampered)!, true);
+        }
+    }
+
+    /// Rewrites one NAVM record of the fixture with `edit` applied to its payload, stored uncompressed so the
+    /// tampered bytes go in verbatim; the groups around it are widened by the same delta so the tree still walks.
+    private static string Tamper(uint navmFormId, Action<byte[]> edit)
+    {
+        byte[] file = File.ReadAllBytes(SavedPlugin());
+        var records = new List<int>();
+        for (int at = 0; at + 24 <= file.Length; at++)
+        {
+            if (file[at] != (byte)'N' || file[at + 1] != (byte)'A' || file[at + 2] != (byte)'V' ||
+                file[at + 3] != (byte)'M') continue;
+            if (BitConverter.ToUInt32(file, at + 12) == navmFormId) records.Add(at);
+        }
+
+        Assert.Single(records);
+        int header = records[0];
+        uint flags = BitConverter.ToUInt32(file, header + 8);
+        int size = (int)BitConverter.ToUInt32(file, header + 4);
+        byte[] stored = file[(header + 24)..(header + 24 + size)];
+        byte[] payload = (flags & 0x00040000) != 0 ? Inflate(stored) : stored;
+
+        edit(payload);
+
+        int delta = payload.Length - size;
+        int recordEnd = header + 24 + size;
+        byte[] rewritten = new byte[file.Length + delta];
+        Array.Copy(file, 0, rewritten, 0, header);
+
+        var recordHeader = new byte[24];
+        Array.Copy(file, header, recordHeader, 0, 24);
+        BitConverter.GetBytes((uint)payload.Length).CopyTo(recordHeader, 4);
+        BitConverter.GetBytes(flags & ~0x00040000u).CopyTo(recordHeader, 8);
+        recordHeader.CopyTo(rewritten, header);
+        payload.CopyTo(rewritten, header + 24);
+        Array.Copy(file, recordEnd, rewritten, recordEnd + delta, file.Length - recordEnd);
+
+        // Constraint: a group's size covers its children, so every group the record sits in grows with it.
+        for (int at = 0; at + 24 <= header; at++)
+        {
+            if (rewritten[at] != (byte)'G' || rewritten[at + 1] != (byte)'R' || rewritten[at + 2] != (byte)'U' ||
+                rewritten[at + 3] != (byte)'P') continue;
+
+            uint groupSize = BitConverter.ToUInt32(rewritten, at + 4);
+            if (at + 24 + groupSize < recordEnd) continue;
+            BitConverter.GetBytes(groupSize + delta).CopyTo(rewritten, at + 4);
+        }
+
+        string directory = Path.Combine(Path.GetTempPath(), "ckagent-tamper-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string target = Path.Combine(directory, "Tampered.esp");
+        File.WriteAllBytes(target, rewritten);
+        return target;
+    }
+
+    private static byte[] Inflate(byte[] stored)
+    {
+        using var input = new MemoryStream(stored, 4, stored.Length - 4, writable: false);
+        using var zlib = new ZLibStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        zlib.CopyTo(output);
+        return output.ToArray();
     }
 
     /// A throwaway install: the game directory only has to hold CreationKit.exe and Data for EditorPaths, so the

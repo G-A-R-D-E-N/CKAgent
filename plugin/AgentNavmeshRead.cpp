@@ -16,6 +16,7 @@
 
 #include "AgentEditorShared.h"
 #include "AgentNavmeshRead.h"
+#include "NavmeshDigest.h"
 
 namespace ckagent
 {
@@ -100,6 +101,9 @@ namespace ckagent
 			double area = 0;
 			std::uint32_t areaTriangles = 0;
 			NavCover cover;
+			std::string verticesHash;
+			std::string trianglesHash;
+			bool hashed = false;
 		};
 
 		std::string GeometryName(NavArrayRead read)
@@ -130,6 +134,9 @@ namespace ckagent
 			bool areaOk = false;
 			NavCover cover;
 			bool coverOk = false;
+			std::string verticesHash;
+			std::string trianglesHash;
+			bool hashed = false;
 		};
 
 		std::string JsonNumber(double value)
@@ -169,6 +176,8 @@ namespace ckagent
 				",\"triangles\":" + (form.counts ? std::to_string(form.triangles) : std::string("null")) +
 				",\"area\":" + (form.areaOk ? JsonNumber(form.area) : std::string("null")) +
 				",\"areaTriangles\":" + (form.areaOk ? std::to_string(form.areaTriangles) : std::string("null")) +
+				",\"verticesHash\":" + (form.hashed ? Quote(form.verticesHash) : std::string("null")) +
+				",\"trianglesHash\":" + (form.hashed ? Quote(form.trianglesHash) : std::string("null")) +
 				JsonKey("cover") + (form.coverOk ? CoverJson(form.cover) : std::string("null")) + "}";
 		}
 
@@ -220,6 +229,12 @@ namespace ckagent
 			// Constraint: a bad count must not walk past the geometry budget, because that would fault the editor thread.
 			if (vertexBytes > kMaxNavGeometryBytes || triangleBytes > kMaxNavGeometryBytes) return false;
 			if (!Readable(vertices, vertexBytes) || !Readable(elements, triangleBytes)) return false;
+
+			// Constraint: the save read-back compares real geometry, so both arrays are digested here, over the
+			// same bytes the file stores: every vertex, then the three indices of every triangle.
+			out.verticesHash = navmeshdigest::VertexHash(vertices, vertexBytes);
+			out.trianglesHash = navmeshdigest::TriangleHash(elements, triangleCount, kNavTriangleStride);
+			out.hashed = true;
 
 			double total = 0;
 			std::uint32_t counted = 0;
@@ -371,6 +386,9 @@ namespace ckagent
 						state.areaTriangles = geometry.areaTriangles;
 						state.areaOk = true;
 						state.cover = geometry.cover;
+						state.verticesHash = geometry.verticesHash;
+						state.trianglesHash = geometry.trianglesHash;
+						state.hashed = geometry.hashed;
 						// Constraint: an emptied form measured no triangles, so its cover is unknown rather than zero.
 						state.coverOk = !geometry.empty;
 						state.geometry = geometry.empty ? GeometryName(NavArrayRead::Empty) : GeometryName(NavArrayRead::Present);

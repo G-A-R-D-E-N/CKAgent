@@ -12,7 +12,7 @@ public sealed partial class NavmeshTools
 
     private sealed record CellNumbers(
         string EditorId, string FormId, bool Interior, int References, int Forms, int ReadForms, int EmptyForms,
-        int Vertices, int Triangles);
+        int Vertices, int Triangles, IReadOnlyList<NavmeshExpectedRecord> Records);
 
     // Constraint: saving a master opens a target dialog, so the name is typed into it and Save pressed, not left to a user.
     private bool AnswerTargetDialog(IntPtr dialog, string saveAs)
@@ -132,6 +132,25 @@ public sealed partial class NavmeshTools
         JsonElement navmesh = Member(root, "navmesh");
         JsonElement coverage = Member(navmesh, "coverage");
 
+        // Constraint: the save read-back compares geometry per record, so the plugin's per-form digests are
+        // carried out of the same read instead of being asked for again after the file was written.
+        var records = new List<NavmeshExpectedRecord>();
+        JsonElement forms = Member(navmesh, "forms");
+        if (forms.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement form in forms.EnumerateArray())
+            {
+                if (!NavmeshPersist.TryParseFormId(StringMember(form, "formId"), out uint navmFormId)) continue;
+
+                string vertexHash = StringMember(form, "verticesHash");
+                string triangleHash = StringMember(form, "trianglesHash");
+                if (vertexHash.Length == 0 || triangleHash.Length == 0) continue;
+
+                records.Add(new NavmeshExpectedRecord(navmFormId, Number(form, "vertices"),
+                    Number(form, "triangles"), vertexHash, triangleHash));
+            }
+        }
+
         return new CellNumbers(
             StringMember(cell, "editorId"),
             StringMember(cell, "formId"),
@@ -141,7 +160,8 @@ public sealed partial class NavmeshTools
             Number(coverage, "readForms"),
             Number(coverage, "emptyForms"),
             Number(coverage, "vertices"),
-            Number(coverage, "triangles"));
+            Number(coverage, "triangles"),
+            records);
     }
 
     /// Constraint: the read-back is what makes a save mean something, so it compares the file's own NAVM geometry
@@ -158,7 +178,15 @@ public sealed partial class NavmeshTools
                 pluginPath);
         }
 
-        return NavmeshPersist.Verify(pluginPath, new NavmeshExpected(formId, state.Forms, state.Vertices, state.Triangles));
+        if (state.Records.Count == 0)
+        {
+            return NavmeshPersistence.Failed("readback_unavailable",
+                "nav.state reported no navmesh form with a geometry digest, so the saved file has nothing to be " +
+                "compared against",
+                pluginPath);
+        }
+
+        return NavmeshPersist.Verify(pluginPath, new NavmeshExpected(formId, state.Records));
     }
 
     /// Constraint: the comparison is against what the editor still holds, read after the save, so a build the
